@@ -1,0 +1,78 @@
+{
+  "name": "scoreapp-calcio",
+  "private": true,
+  "version": "1.0.0",
+  "author": "Christian Comiato <christiancomiato@gmail.com>",
+  "description": "Almanacco & Statistiche Calcio - Registro Partite, Marcatori e Classifiche",
+  "main": "dist-electron/main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/christiancomiato/almanacco-calcio.git"
+  },
+  "scripts": {
+    "dev:vite": "vite",
+    "build:vite": "tsc && vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build": "npm run build:vite && npm run build:electron",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win portable nsis",
+    "release": "npm run build && electron-builder --win portable nsis --publish always"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.scoreapp.almanaccocalcio",
+    "productName": "Almanacco Calcio",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "christiancomiato",
+        "repo": "almanacco-calcio",
+        "releaseType": "release"
+      }
+    ],
+    "directories": {
+      "output": "dist-release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "AlmanaccoCalcio-Portable.exe"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Almanacco Calcio",
+      "artifactName": "AlmanaccoCalcio-Setup.exe"
+    }
+  }
+}
