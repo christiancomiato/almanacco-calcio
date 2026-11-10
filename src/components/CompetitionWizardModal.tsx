@@ -191,10 +191,7 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
       }
     });
 
-    const finalTeamCount =
-      cleanedNames.length % 2 === 0
-        ? cleanedNames.length
-        : cleanedNames.length + 1;
+    const finalTeamCount = teamCount % 2 === 0 ? teamCount : teamCount + 1;
 
     const savedComp: Competition = {
       id: compId,
@@ -215,6 +212,7 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
       hasReturnLeg,
       season: season.trim() || defaultSeason,
       teamIds: enrolledTeamIds,
+      matchdayDateRanges: editingCompetition?.matchdayDateRanges,
     };
 
     onSaveCompetitionWithTeams(savedComp, newlyCreatedTeams);

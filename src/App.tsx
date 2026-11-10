@@ -57,6 +57,7 @@ export const App: React.FC = () => {
   const [selectedCompetitionId, setSelectedCompetitionId] = useState<string>(
     DEFAULT_DATABASE.settings.defaultCompetitionId || 'comp-serie-a'
   );
+  const [selectedMatchday, setSelectedMatchday] = useState<number>(1);
   const [editingMatch, setEditingMatch] = useState<Match | null>(null);
   const [returnToScheduleAfterEdit, setReturnToScheduleAfterEdit] = useState(false);
   const [isCompWizardOpen, setIsCompWizardOpen] = useState(false);
@@ -88,7 +89,7 @@ export const App: React.FC = () => {
       const res = await checkForAppUpdates();
       setUpdateInfo({
         updateAvailable: res.updateAvailable,
-        currentVersion: res.currentVersion || '1.1.0',
+        currentVersion: res.currentVersion || '1.1.1',
         latestVersion: res.latestVersion,
         downloadUrl: res.downloadUrl,
         assetName: res.assetName,
@@ -292,8 +293,16 @@ export const App: React.FC = () => {
         });
       }
 
-      const nextTeams =
+      let nextTeams =
         newTeams && newTeams.length > 0 ? [...prev.teams, ...newTeams] : prev.teams;
+
+      // Automatically remember the stadium on the Home Team so future home matches auto-fill it!
+      if (match.stadium && match.stadium.trim()) {
+        const trimmedStadium = match.stadium.trim();
+        nextTeams = nextTeams.map((t) =>
+          t.id === match.homeTeamId ? { ...t, stadium: trimmedStadium } : t
+        );
+      }
 
       const exists = prev.matches.some((m) => m.id === match.id);
       const nextMatches = exists
@@ -312,6 +321,10 @@ export const App: React.FC = () => {
       for (const nt of newTeams) {
         autoFetchLogoForTeam(nt);
       }
+    }
+
+    if (match.matchdayNumber && match.matchdayNumber > 0) {
+      setSelectedMatchday(match.matchdayNumber);
     }
 
     if (editingMatch) {
@@ -585,9 +598,14 @@ export const App: React.FC = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
           {/* Brand Logo & Title */}
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-white flex items-center justify-center shadow-md shadow-emerald-600/20 font-black text-xl">
-              ⚽
-            </div>
+            <img
+              src="./app-icon.jpg"
+              alt="Almanacco Calcio"
+              className="w-11 h-11 rounded-2xl object-cover shadow-md shadow-emerald-600/20 border border-emerald-500/30"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = 'none';
+              }}
+            />
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
@@ -610,7 +628,7 @@ export const App: React.FC = () => {
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-[11px] font-bold text-slate-600 dark:text-slate-300 hover:border-emerald-500 transition cursor-pointer"
                 >
                   <RefreshCw className={`w-3 h-3 ${isCheckingUpdate ? 'animate-spin' : ''}`} />
-                  v{updateInfo?.currentVersion || '1.1.0'}
+                  v{updateInfo?.currentVersion || '1.1.1'}
                 </button>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -869,7 +887,13 @@ export const App: React.FC = () => {
             matches={db.matches}
             defaultSeason={db.settings.defaultSeason}
             selectedCompetitionId={selectedCompetitionId}
-            onSelectCompetitionId={setSelectedCompetitionId}
+            onSelectCompetitionId={(newCompId) => {
+              setSelectedCompetitionId(newCompId);
+              setSelectedMatchday(1);
+            }}
+            selectedDay={selectedMatchday}
+            onSelectDay={setSelectedMatchday}
+            onSaveCompetition={handleSaveCompetition}
             onOpenNewCompetitionWizard={() => {
               setEditingCompForWizard(null);
               setIsCompWizardOpen(true);
@@ -879,6 +903,9 @@ export const App: React.FC = () => {
               setIsCompWizardOpen(true);
             }}
             onOpenMatchDetails={(m) => {
+              if (m.matchdayNumber && m.matchdayNumber > 0) {
+                setSelectedMatchday(m.matchdayNumber);
+              }
               setEditingMatch(m);
               setReturnToScheduleAfterEdit(true);
               setActiveTab('entry');

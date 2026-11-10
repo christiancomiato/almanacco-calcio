@@ -24,7 +24,7 @@ import {
   Team,
   TeamSide,
 } from '../types';
-import { getTeamsForCompetition } from '../data/seedData';
+import { getTeamHomeStadium, getTeamsForCompetition } from '../data/seedData';
 import { CompetitionBadge, TeamCrest } from './TeamCrest';
 import { OnlineLogoModal } from './OnlineLogoModal';
 
@@ -162,7 +162,10 @@ export const MatchEntryView: React.FC<MatchEntryViewProps> = ({
           : ''
       );
       setEvents(editingMatch.events.map((e) => ({ ...e })));
-      setStadium(editingMatch.stadium || '');
+      setStadium(
+        editingMatch.stadium ||
+          getTeamHomeStadium(editingMatch.homeTeamId, teams, matches)
+      );
       setReferee(editingMatch.referee || '');
       setNotes(editingMatch.notes || '');
       setRating(editingMatch.rating || 0);
@@ -318,11 +321,18 @@ export const MatchEntryView: React.FC<MatchEntryViewProps> = ({
     setDate(d.toISOString().slice(0, 10));
   };
 
+  const handleSelectHomeTeam = (newHomeId: string) => {
+    setHomeTeamId(newHomeId);
+    const autoStadium = getTeamHomeStadium(newHomeId, teams, matches);
+    setStadium(autoStadium);
+  };
+
   const handleSwapTeams = () => {
     const prevHomeId = homeTeamId;
     const prevAwayId = awayTeamId;
     setHomeTeamId(prevAwayId);
     setAwayTeamId(prevHomeId);
+    setStadium(getTeamHomeStadium(prevAwayId, teams, matches));
 
     const prevHScore = homeScore;
     const prevAScore = awayScore;
@@ -775,7 +785,7 @@ export const MatchEntryView: React.FC<MatchEntryViewProps> = ({
                   ) : (
                     <select
                       value={homeTeamId}
-                      onChange={(e) => setHomeTeamId(e.target.value)}
+                      onChange={(e) => handleSelectHomeTeam(e.target.value)}
                       className="w-full px-4 py-3 rounded-xl bg-slate-800/90 hover:bg-slate-800 border border-slate-600 text-white text-lg font-extrabold focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
                     >
                       <option value="">-- Seleziona Squadra Casa --</option>
@@ -1224,15 +1234,22 @@ export const MatchEntryView: React.FC<MatchEntryViewProps> = ({
         <div className="bg-white dark:bg-studio-card border border-slate-200/90 dark:border-slate-800 rounded-2xl p-5 shadow-xs space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
             <div className="md:col-span-4">
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-1">
-                <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-                Stadio / Città (Opzionale)
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1 flex items-center justify-between gap-1">
+                <span className="flex items-center gap-1">
+                  <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                  Stadio / Città (Auto-compilato)
+                </span>
+                {selectedHomeTeam && stadium && (
+                  <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                    Casa {selectedHomeTeam.shortCode}
+                  </span>
+                )}
               </label>
               <input
                 type="text"
                 value={stadium}
                 onChange={(e) => setStadium(e.target.value)}
-                placeholder="Es. San Siro, Milano"
+                placeholder="Es. San Siro, Milano (si ricorderà per le prossime partite in casa)"
                 className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
             </div>

@@ -3,22 +3,19 @@ import {
   ArrowLeftRight,
   Calendar,
   Check,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
   Edit3,
+  MapPin,
   Plus,
   RefreshCw,
-  Settings,
-  Shield,
-  Sparkles,
+  Search,
   Trash2,
-  Trophy,
   Users,
 } from 'lucide-react';
 import { Competition, Match, Team } from '../types';
-import { getTeamsForCompetition } from '../data/seedData';
+import { getTeamHomeStadium, getTeamsForCompetition } from '../data/seedData';
 import { CompetitionBadge, TeamCrest } from './TeamCrest';
 import { formatEventShortBadgeIt, formatMinute } from '../services/excelService';
 
@@ -29,11 +26,38 @@ interface MatchdayScheduleViewProps {
   defaultSeason: string;
   selectedCompetitionId: string;
   onSelectCompetitionId: (compId: string) => void;
+  selectedDay: number;
+  onSelectDay: (day: number) => void;
+  onSaveCompetition: (comp: Competition) => void;
   onOpenNewCompetitionWizard: () => void;
   onOpenEditCompetitionWizard: (comp: Competition) => void;
   onOpenMatchDetails: (match: Match) => void;
   onUpsertMatches: (matchesToSave: Match[]) => void;
   onDeleteMatch: (matchId: string) => void;
+}
+
+function addDaysToIso(isoDate: string, daysToAdd: number): string {
+  try {
+    const d = new Date(isoDate + 'T12:00:00');
+    if (isNaN(d.getTime())) return isoDate;
+    d.setDate(d.getDate() + daysToAdd);
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return isoDate;
+  }
+}
+
+function formatShortItDate(isoDate: string): string {
+  try {
+    const d = new Date(isoDate + 'T12:00:00');
+    if (isNaN(d.getTime())) return isoDate;
+    return d.toLocaleDateString('it-IT', {
+      day: '2-digit',
+      month: 'short',
+    });
+  } catch {
+    return isoDate;
+  }
 }
 
 export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
@@ -43,6 +67,9 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
   defaultSeason,
   selectedCompetitionId,
   onSelectCompetitionId,
+  selectedDay,
+  onSelectDay,
+  onSaveCompetition,
   onOpenNewCompetitionWizard,
   onOpenEditCompetitionWizard,
   onOpenMatchDetails,
@@ -61,8 +88,8 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
   const [season, setSeason] = useState(
     selectedCompetition?.season || defaultSeason || '2026/27'
   );
-  const [selectedDay, setSelectedDay] = useState<number>(1);
-  const [matchdayDate, setMatchdayDate] = useState<string>(todayIso);
+  const [jumpDateInput, setJumpDateInput] = useState<string>('');
+  const [jumpFeedback, setJumpFeedback] = useState<string | null>(null);
 
   // Draft selections for empty slots: slotIndex -> { homeTeamId, awayTeamId }
   const [draftSlots, setDraftSlots] = useState<
@@ -89,13 +116,15 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
     return map;
   }, [teams]);
 
-  // Calculate competition calendar structure
+  // Calculate competition calendar structure — strictly reflects updated teamCount / enrolledTeams!
   const effectiveTeamCount = useMemo(() => {
     const raw =
-      selectedCompetition?.teamCount || enrolledTeams.length || 20;
+      enrolledTeams.length > 0
+        ? selectedCompetition?.teamCount || enrolledTeams.length
+        : selectedCompetition?.teamCount || 20;
     const count = Math.max(2, raw);
     return count % 2 === 0 ? count : count + 1;
-  }, [selectedCompetition, enrolledTeams.length]);
+  }, [selectedCompetition?.teamCount, enrolledTeams.length]);
 
   const matchesPerDay = Math.floor(effectiveTeamCount / 2);
   const andataDays = Math.max(1, effectiveTeamCount - 1);
@@ -105,14 +134,14 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
       : true;
   const totalDays = hasReturnLeg ? andataDays * 2 : andataDays;
 
-  // Ensure selectedDay stays within bounds when switching competition
+  // Ensure selectedDay stays within bounds when switching competition or reducing teamCount
   useEffect(() => {
     if (selectedDay > totalDays) {
-      setSelectedDay(1);
+      onSelectDay(1);
     }
-  }, [totalDays, selectedDay]);
+  }, [totalDays, selectedDay, onSelectDay]);
 
-  // Helper to get matchdayNumber from a Match record (even if created before v1.1)
+  // Helper to get matchdayNumber from a Match record
   const getMatchdayNumber = (m: Match): number | null => {
     if (m.matchdayNumber && m.matchdayNumber > 0) return m.matchdayNumber;
     const match = (m.stageOrMatchday || '').match(/^(\d+)ª?\s*Giornata/i);
@@ -128,6 +157,185 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
         m.competitionId === selectedCompetition.id && m.season === season
     );
   }, [matches, selectedCompetition, season]);
+
+  /**
+   * Compute the Date Range { startDate, endDate } for EVERY matchday 1..totalDays.
+   * Priority for day D:
+   * 1) Explicit saved range in `selectedCompetition.matchdayDateRanges["season::D"]` combined with actual match dates in day D.
+   * 2) Actual min/max match dates of matches saved in day D.
+   * 3) Automatic +7 days progression from the previous matchday so changing matchday ALWAYS updates the dates!
+   */
+  const matchdayRangesMap = useMemo(() => {
+    const map = new Map<
+      number,
+      { startDate: string; endDate: string; hasExplicitOrMatches: boolean }
+    >();
+    const savedRanges = selectedCompetition?.matchdayDateRanges || {};
+
+    let prevStart = todayIso;
+
+    for (let d = 1; d <= totalDays; d++) {
+      const key = `${season}::${d}`;
+      const explicitRange = savedRanges[key];
+      const dayMatches = competitionMatches.filter(
+        (m) => getMatchdayNumber(m) === d && Boolean(m.date)
+      );
+
+      const dates: string[] = dayMatches.map((m) => m.date).sort();
+
+      if (explicitRange?.startDate && explicitRange?.endDate) {
+        const minD =
+          dates.length > 0 && dates[0] < explicitRange.startDate
+            ? dates[0]
+            : explicitRange.startDate;
+        const maxD =
+          dates.length > 0 && dates[dates.length - 1] > explicitRange.endDate
+            ? dates[dates.length - 1]
+            : explicitRange.endDate;
+        map.set(d, {
+          startDate: minD,
+          endDate: maxD,
+          hasExplicitOrMatches: true,
+        });
+        prevStart = minD;
+      } else if (dates.length > 0) {
+        const minD = dates[0];
+        const maxD = dates[dates.length - 1];
+        map.set(d, {
+          startDate: minD,
+          endDate: maxD,
+          hasExplicitOrMatches: true,
+        });
+        prevStart = minD;
+      } else {
+        const autoStart = d === 1 ? todayIso : addDaysToIso(prevStart, 7);
+        const autoEnd = addDaysToIso(autoStart, 3); // Typical Friday->Monday 4-day matchday window
+        map.set(d, {
+          startDate: autoStart,
+          endDate: autoEnd,
+          hasExplicitOrMatches: false,
+        });
+        prevStart = autoStart;
+      }
+    }
+
+    return map;
+  }, [
+    selectedCompetition?.matchdayDateRanges,
+    competitionMatches,
+    season,
+    totalDays,
+    todayIso,
+  ]);
+
+  const currentDayRange = useMemo(() => {
+    return (
+      matchdayRangesMap.get(selectedDay) || {
+        startDate: todayIso,
+        endDate: addDaysToIso(todayIso, 3),
+        hasExplicitOrMatches: false,
+      }
+    );
+  }, [matchdayRangesMap, selectedDay, todayIso]);
+
+  // Update the stored date range for the currently selected matchday
+  const handleUpdateCurrentDayRange = (
+    newStart: string,
+    newEnd: string
+  ) => {
+    if (!selectedCompetition || !newStart) return;
+    const validEnd = newEnd && newEnd >= newStart ? newEnd : newStart;
+    const key = `${season}::${selectedDay}`;
+    const nextRanges = {
+      ...(selectedCompetition.matchdayDateRanges || {}),
+      [key]: { startDate: newStart, endDate: validEnd },
+    };
+    onSaveCompetition({
+      ...selectedCompetition,
+      matchdayDateRanges: nextRanges,
+    });
+  };
+
+  /**
+   * Smart "Vai a Data" (Search by Date):
+   * When the user selects a date (e.g. 11th when Giornata 1 is 10th-14th),
+   * find the matchday whose [startDate, endDate] range contains that date (or has a match on that date),
+   * and open that entire Giornata!
+   */
+  const handleJumpByDate = (pickedDate: string) => {
+    setJumpDateInput(pickedDate);
+    if (!pickedDate) {
+      setJumpFeedback(null);
+      return;
+    }
+
+    // 1. Check if any matchday has a match on that exact date
+    for (let d = 1; d <= totalDays; d++) {
+      const hasExactMatch = competitionMatches.some(
+        (m) => getMatchdayNumber(m) === d && m.date === pickedDate
+      );
+      if (hasExactMatch) {
+        onSelectDay(d);
+        setJumpFeedback(
+          `Aperta la ${d}ª Giornata (contiene partite del ${formatShortItDate(pickedDate)})`
+        );
+        return;
+      }
+    }
+
+    // 2. Check if pickedDate falls inside [startDate, endDate] of any matchday with matches or explicit range
+    for (let d = 1; d <= totalDays; d++) {
+      const r = matchdayRangesMap.get(d);
+      if (
+        r &&
+        r.hasExplicitOrMatches &&
+        pickedDate >= r.startDate &&
+        pickedDate <= r.endDate
+      ) {
+        onSelectDay(d);
+        setJumpFeedback(
+          `Aperta la ${d}ª Giornata (turno dal ${formatShortItDate(r.startDate)} al ${formatShortItDate(r.endDate)})`
+        );
+        return;
+      }
+    }
+
+    // 3. Check all calculated matchday ranges (including auto-projected ones)
+    for (let d = 1; d <= totalDays; d++) {
+      const r = matchdayRangesMap.get(d);
+      if (r && pickedDate >= r.startDate && pickedDate <= r.endDate) {
+        onSelectDay(d);
+        setJumpFeedback(
+          `Aperta la ${d}ª Giornata (${formatShortItDate(r.startDate)} – ${formatShortItDate(r.endDate)})`
+        );
+        return;
+      }
+    }
+
+    // 4. Otherwise find the matchday whose startDate is closest to pickedDate
+    let bestDay = 1;
+    let bestDiff = Infinity;
+    const pickedMs = new Date(pickedDate + 'T12:00:00').getTime();
+    for (let d = 1; d <= totalDays; d++) {
+      const r = matchdayRangesMap.get(d);
+      if (!r) continue;
+      const startMs = new Date(r.startDate + 'T12:00:00').getTime();
+      const diff = Math.abs(pickedMs - startMs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestDay = d;
+      }
+    }
+    onSelectDay(bestDay);
+    const bestRange = matchdayRangesMap.get(bestDay);
+    setJumpFeedback(
+      `Giornata più vicina al ${formatShortItDate(pickedDate)}: ${bestDay}ª Giornata (${
+        bestRange
+          ? `${formatShortItDate(bestRange.startDate)} – ${formatShortItDate(bestRange.endDate)}`
+          : ''
+      })`
+    );
+  };
 
   // Matches for the currently selected Matchday, mapped to slots 0..(matchesPerDay - 1)
   const currentDaySlots = useMemo(() => {
@@ -179,7 +387,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
     return set;
   }, [currentDaySlots, draftSlots]);
 
-  // Count status per matchday for the visual navigator dots
+  // Count status per matchday for the visual navigator pills
   const matchdayStatusMap = useMemo(() => {
     const map = new Map<
       number,
@@ -219,9 +427,15 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
       existingMatch?.id ||
       `match-${selectedCompetition.id}-${season.replace('/', '')}-d${selectedDay}-s${slotIdx}-${Date.now()}`;
 
+    // Auto-fill home team's stadium (changes if homeTeam changed!)
+    const autoHomeStadium =
+      existingMatch && existingMatch.homeTeamId === homeTeam.id && existingMatch.stadium
+        ? existingMatch.stadium
+        : getTeamHomeStadium(homeTeam.id, teams, matches);
+
     const primaryMatch: Match = {
       id: primaryMatchId,
-      date: existingMatch?.date || matchdayDate,
+      date: existingMatch?.date || currentDayRange.startDate,
       time: existingMatch?.time || '15:00',
       season,
       competitionId: selectedCompetition.id,
@@ -239,7 +453,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
       homeHalfTimeScore: existingMatch?.homeHalfTimeScore,
       awayHalfTimeScore: existingMatch?.awayHalfTimeScore,
       events: existingMatch ? existingMatch.events : [],
-      stadium: existingMatch?.stadium,
+      stadium: autoHomeStadium || undefined,
       referee: existingMatch?.referee,
       notes: existingMatch?.notes,
       rating: existingMatch?.rating,
@@ -252,6 +466,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
     // If this is a Girone d'Andata matchday and hasReturnLeg is enabled, automatically create/update the Return Leg match!
     if (hasReturnLeg && selectedDay <= andataDays) {
       const returnDayNumber = selectedDay + andataDays;
+      const returnDayRange = matchdayRangesMap.get(returnDayNumber);
       const existingReturnMatch = competitionMatches.find(
         (m) =>
           m.pairedMatchId === primaryMatch.id ||
@@ -264,10 +479,21 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
 
       primaryMatch.pairedMatchId = returnMatchId;
 
+      // In the Return Leg, awayTeam is at HOME, so auto-fill awayTeam's stadium!
+      const autoReturnStadium =
+        existingReturnMatch &&
+        existingReturnMatch.homeTeamId === awayTeam.id &&
+        existingReturnMatch.stadium
+          ? existingReturnMatch.stadium
+          : getTeamHomeStadium(awayTeam.id, teams, matches);
+
       const returnMatch: Match = {
         id: returnMatchId,
         pairedMatchId: primaryMatch.id,
-        date: existingReturnMatch?.date || matchdayDate,
+        date:
+          existingReturnMatch?.date ||
+          returnDayRange?.startDate ||
+          addDaysToIso(currentDayRange.startDate, andataDays * 7),
         time: existingReturnMatch?.time || '15:00',
         season,
         competitionId: selectedCompetition.id,
@@ -286,7 +512,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
         homeHalfTimeScore: existingReturnMatch?.homeHalfTimeScore,
         awayHalfTimeScore: existingReturnMatch?.awayHalfTimeScore,
         events: existingReturnMatch ? existingReturnMatch.events : [],
-        stadium: existingReturnMatch?.stadium,
+        stadium: autoReturnStadium || undefined,
         referee: existingReturnMatch?.referee,
         notes: existingReturnMatch?.notes,
         rating: existingReturnMatch?.rating,
@@ -349,6 +575,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
         (m) => getMatchdayNumber(m) === day
       );
       const returnDay = day + andataDays;
+      const returnRange = matchdayRangesMap.get(returnDay);
 
       andataMatches.forEach((m, idx) => {
         const slot = m.slotIndex !== undefined ? m.slotIndex : idx;
@@ -362,10 +589,17 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
           existingReturn?.id ||
           `match-${selectedCompetition.id}-d${returnDay}-s${slot}-${Date.now()}-${idx}`;
 
+        const autoReturnStadium =
+          existingReturn?.stadium ||
+          getTeamHomeStadium(m.awayTeamId, teams, matches);
+
         toUpsert.push({
           id: returnId,
           pairedMatchId: m.id,
-          date: existingReturn?.date || m.date,
+          date:
+            existingReturn?.date ||
+            returnRange?.startDate ||
+            addDaysToIso(m.date, andataDays * 7),
           time: existingReturn?.time || m.time || '15:00',
           season,
           competitionId: selectedCompetition.id,
@@ -380,6 +614,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
           awayTeamName: m.homeTeamName,
           homeScore: existingReturn ? existingReturn.homeScore : 0,
           awayScore: existingReturn ? existingReturn.awayScore : 0,
+          stadium: autoReturnStadium || undefined,
           events: existingReturn ? existingReturn.events : [],
           createdAt: existingReturn?.createdAt || nowIso,
           updatedAt: nowIso,
@@ -409,6 +644,17 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
     onUpsertMatches([updated]);
   };
 
+  const handleSingleMatchDateChange = (match: Match, newDate: string) => {
+    if (!newDate) return;
+    onUpsertMatches([
+      {
+        ...match,
+        date: newDate,
+        updatedAt: new Date().toISOString(),
+      },
+    ]);
+  };
+
   const handleTogglePlayedStatus = (match: Match) => {
     const nextStatus = match.status === 'SCHEDULED' ? 'PLAYED' : 'SCHEDULED';
     onUpsertMatches([
@@ -421,6 +667,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
   };
 
   const handleSwapMatchTeams = (match: Match) => {
+    const newHomeStadium = getTeamHomeStadium(match.awayTeamId, teams, matches);
     const updated: Match = {
       ...match,
       homeTeamId: match.awayTeamId,
@@ -429,6 +676,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
       awayTeamName: match.homeTeamName,
       homeScore: match.awayScore,
       awayScore: match.homeScore,
+      stadium: newHomeStadium || match.stadium,
       events: match.events.map((e) => ({
         ...e,
         side: e.side === 'home' ? 'away' : 'home',
@@ -466,11 +714,15 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                 onChange={(e) => onSelectCompetitionId(e.target.value)}
                 className="w-full px-4 py-2.5 rounded-xl border-2 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-base font-black text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
               >
-                {competitions.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.teamIds?.length || c.teamCount || 20} squadre)
-                  </option>
-                ))}
+                {competitions.map((c) => {
+                  const cTeams = getTeamsForCompetition(c.id, competitions, teams);
+                  const displayCount = c.teamCount || cTeams.length || 20;
+                  return (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({displayCount} squadre)
+                    </option>
+                  );
+                })}
               </select>
             </div>
 
@@ -503,7 +755,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                 className="px-4 py-3 rounded-xl border-2 border-slate-300 dark:border-slate-700 hover:border-emerald-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-extrabold flex items-center gap-2 transition cursor-pointer"
               >
                 <Users className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                Squadre Iscritte ({enrolledTeams.length})
+                Squadre Iscritte ({enrolledTeams.length}/{effectiveTeamCount})
               </button>
             )}
 
@@ -519,14 +771,14 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
         </div>
       </div>
 
-      {/* 2. AUTOMATIC NUMBERED MATCHDAY NAVIGATOR (ANDATA & RITORNO) */}
+      {/* 2. AUTOMATIC NUMBERED MATCHDAY NAVIGATOR & DATE RANGE / JUMP BY DATE */}
       <div className="bg-white dark:bg-studio-card border border-slate-200/90 dark:border-slate-800 rounded-2xl p-5 shadow-xs space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-3">
             <button
               type="button"
               disabled={selectedDay <= 1}
-              onClick={() => setSelectedDay((d) => Math.max(1, d - 1))}
+              onClick={() => onSelectDay(Math.max(1, selectedDay - 1))}
               className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-emerald-600 hover:text-white disabled:opacity-35 text-slate-700 dark:text-slate-200 transition cursor-pointer"
               title="Giornata precedente"
             >
@@ -534,7 +786,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
             </button>
 
             <div>
-              <div className="flex items-center gap-2.5">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <span className="text-2xl font-black text-slate-900 dark:text-white tabular-nums">
                   {selectedDay}ª Giornata
                 </span>
@@ -549,6 +801,10 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                     ? `Girone di Ritorno (${selectedDay - andataDays}ª di Ritorno)`
                     : "Girone d'Andata"}
                 </span>
+                <span className="px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 tabular-nums">
+                  📅 {formatShortItDate(currentDayRange.startDate)} –{' '}
+                  {formatShortItDate(currentDayRange.endDate)}
+                </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 {isReturnLegDay ? (
@@ -556,7 +812,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                     Campi invertiti rispetto alla{' '}
                     <button
                       type="button"
-                      onClick={() => setSelectedDay(correspondingAndataDay)}
+                      onClick={() => onSelectDay(correspondingAndataDay)}
                       className="font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
                     >
                       {correspondingAndataDay}ª Giornata d&apos;Andata
@@ -567,7 +823,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                     Inserendo le partite qui, la{' '}
                     <button
                       type="button"
-                      onClick={() => setSelectedDay(correspondingAndataDay)}
+                      onClick={() => onSelectDay(correspondingAndataDay)}
                       className="font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
                     >
                       {correspondingAndataDay}ª Giornata (Ritorno)
@@ -583,7 +839,7 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
             <button
               type="button"
               disabled={selectedDay >= totalDays}
-              onClick={() => setSelectedDay((d) => Math.min(totalDays, d + 1))}
+              onClick={() => onSelectDay(Math.min(totalDays, selectedDay + 1))}
               className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-emerald-600 hover:text-white disabled:opacity-35 text-slate-700 dark:text-slate-200 transition cursor-pointer"
               title="Giornata successiva"
             >
@@ -591,18 +847,60 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
             </button>
           </div>
 
-          {/* Default Date for this Matchday & Sync Return Button */}
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700">
-              <Calendar className="w-4 h-4 text-emerald-600" />
-              <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
-                Data turno:
+          {/* Matchday Date Range (Dal .. Al ..) + Smart "Vai a Data" Jump */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Periodo Giornata: Dal ... Al ... */}
+            <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700">
+              <Calendar className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                Dal:
               </span>
               <input
                 type="date"
-                value={matchdayDate}
-                onChange={(e) => setMatchdayDate(e.target.value)}
-                className="bg-transparent text-xs font-extrabold text-slate-900 dark:text-white tabular-nums focus:outline-none"
+                value={currentDayRange.startDate}
+                onChange={(e) =>
+                  handleUpdateCurrentDayRange(
+                    e.target.value,
+                    currentDayRange.endDate < e.target.value
+                      ? addDaysToIso(e.target.value, 3)
+                      : currentDayRange.endDate
+                  )
+                }
+                className="bg-transparent text-xs font-extrabold text-slate-900 dark:text-white tabular-nums focus:outline-none cursor-pointer"
+                title="Data inizio di questa giornata"
+              />
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 ml-1">
+                Al:
+              </span>
+              <input
+                type="date"
+                value={currentDayRange.endDate}
+                min={currentDayRange.startDate}
+                onChange={(e) =>
+                  handleUpdateCurrentDayRange(
+                    currentDayRange.startDate,
+                    e.target.value
+                  )
+                }
+                className="bg-transparent text-xs font-extrabold text-slate-900 dark:text-white tabular-nums focus:outline-none cursor-pointer"
+                title="Data fine di questa giornata"
+              />
+            </div>
+
+            {/* Smart "Vai a Data" Search */}
+            <div
+              className="flex items-center gap-1.5 bg-emerald-500/10 dark:bg-emerald-950/40 px-3 py-1.5 rounded-xl border border-emerald-500/30"
+              title="Seleziona un giorno qualsiasi sul calendario: l'app aprirà automaticamente l'intera giornata che comprende quella data!"
+            >
+              <Search className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span className="text-[11px] font-extrabold text-emerald-800 dark:text-emerald-300">
+                Vai a data:
+              </span>
+              <input
+                type="date"
+                value={jumpDateInput}
+                onChange={(e) => handleJumpByDate(e.target.value)}
+                className="bg-transparent text-xs font-extrabold text-emerald-950 dark:text-emerald-200 tabular-nums focus:outline-none cursor-pointer"
               />
             </div>
 
@@ -620,6 +918,22 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
           </div>
         </div>
 
+        {jumpFeedback && (
+          <div className="px-3.5 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-800 dark:text-emerald-200 text-xs font-bold flex items-center justify-between">
+            <span>🎯 {jumpFeedback}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setJumpFeedback(null);
+                setJumpDateInput('');
+              }}
+              className="text-[11px] underline ml-3 cursor-pointer"
+            >
+              Chiudi
+            </button>
+          </div>
+        )}
+
         {/* Numbered Pills Grid for Andata & Ritorno */}
         <div className="space-y-2.5">
           {/* Girone d'Andata Row */}
@@ -633,12 +947,18 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                 const isSelected = selectedDay === day;
                 const isComplete = stat && stat.played >= matchesPerDay;
                 const hasAny = stat && stat.total > 0;
+                const dRange = matchdayRangesMap.get(day);
 
                 return (
                   <button
                     key={day}
                     type="button"
-                    onClick={() => setSelectedDay(day)}
+                    onClick={() => onSelectDay(day)}
+                    title={
+                      dRange
+                        ? `${day}ª Giornata (${formatShortItDate(dRange.startDate)} – ${formatShortItDate(dRange.endDate)})`
+                        : `${day}ª Giornata`
+                    }
                     className={`min-w-[38px] h-8 px-2 rounded-lg text-xs font-black tabular-nums flex items-center justify-center gap-1 transition cursor-pointer ${
                       isSelected
                         ? 'bg-emerald-600 text-white shadow-sm scale-105'
@@ -671,12 +991,18 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                   const isSelected = selectedDay === day;
                   const isComplete = stat && stat.played >= matchesPerDay;
                   const hasAny = stat && stat.total > 0;
+                  const dRange = matchdayRangesMap.get(day);
 
                   return (
                     <button
                       key={day}
                       type="button"
-                      onClick={() => setSelectedDay(day)}
+                      onClick={() => onSelectDay(day)}
+                      title={
+                        dRange
+                          ? `${day}ª Giornata (${formatShortItDate(dRange.startDate)} – ${formatShortItDate(dRange.endDate)})`
+                          : `${day}ª Giornata`
+                      }
                       className={`min-w-[38px] h-8 px-2 rounded-lg text-xs font-black tabular-nums flex items-center justify-center gap-1 transition cursor-pointer ${
                         isSelected
                           ? 'bg-amber-500 text-slate-950 shadow-sm scale-105'
@@ -697,16 +1023,20 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
         </div>
       </div>
 
-      {/* 3. THE MATCHDAY BOARD (ALL 10 MATCHES OF THE GIORNATA IN ONE LIST) */}
+      {/* 3. THE MATCHDAY BOARD (ALL MATCHES OF THE GIORNATA IN ONE LIST) */}
       <div className="bg-white dark:bg-studio-card border border-slate-200/90 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs">
         <div className="px-6 py-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <span className="px-3 py-1 rounded-lg bg-emerald-500 text-slate-950 font-black text-xs uppercase tracking-wider">
               {selectedDay}ª Giornata
             </span>
             <h3 className="text-base sm:text-lg font-black">
               Tabellone Partite — {selectedCompetition?.name} ({season})
             </h3>
+            <span className="text-xs font-bold text-emerald-400 tabular-nums">
+              • Dal {formatShortItDate(currentDayRange.startDate)} al{' '}
+              {formatShortItDate(currentDayRange.endDate)}
+            </span>
           </div>
 
           <div className="text-xs text-slate-300 font-medium">
@@ -764,6 +1094,8 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
               );
 
               const isPlayed = match && match.status !== 'SCHEDULED';
+              const isHighlightedByJump =
+                Boolean(jumpDateInput) && match?.date === jumpDateInput;
               const homeTeamObj = currentHomeId
                 ? teamMap.get(currentHomeId)
                 : undefined;
@@ -775,7 +1107,9 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                 <div
                   key={match?.id || `slot-${slotIdx}`}
                   className={`px-4 sm:px-6 py-3.5 transition ${
-                    match
+                    isHighlightedByJump
+                      ? 'bg-emerald-500/10 dark:bg-emerald-950/30 ring-2 ring-inset ring-emerald-500/50'
+                      : match
                       ? isPlayed
                         ? 'bg-white dark:bg-studio-card hover:bg-slate-50/80 dark:hover:bg-slate-800/40'
                         : 'bg-sky-50/30 dark:bg-sky-950/15 hover:bg-sky-50/60 dark:hover:bg-sky-950/25'
@@ -783,35 +1117,46 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                   }`}
                 >
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
-                    {/* Slot Number & Status Badge */}
-                    <div className="lg:col-span-2 flex items-center gap-2.5">
-                      <span className="w-7 h-7 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-black flex items-center justify-center shrink-0 tabular-nums">
+                    {/* Slot Number, Status Badge & Match Date */}
+                    <div className="lg:col-span-2 flex flex-wrap items-center gap-1.5">
+                      <span className="w-6 h-6 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-black flex items-center justify-center shrink-0 tabular-nums">
                         {slotIdx + 1}
                       </span>
 
                       {match ? (
-                        <button
-                          type="button"
-                          onClick={() => handleTogglePlayedStatus(match)}
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold flex items-center gap-1 transition cursor-pointer ${
-                            isPlayed
-                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
-                              : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
-                          }`}
-                          title="Clicca per cambiare stato tra Da Giocare e Giocata"
-                        >
-                          {isPlayed ? (
-                            <>
-                              <Check className="w-3 h-3 stroke-[3]" />
-                              Giocata
-                            </>
-                          ) : (
-                            <>
-                              <Clock className="w-3 h-3" />
-                              Da Giocare
-                            </>
-                          )}
-                        </button>
+                        <div className="flex flex-col gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePlayedStatus(match)}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold flex items-center gap-1 transition cursor-pointer w-fit ${
+                              isPlayed
+                                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                                : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
+                            }`}
+                            title="Clicca per cambiare stato tra Da Giocare e Giocata"
+                          >
+                            {isPlayed ? (
+                              <>
+                                <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                Giocata
+                              </>
+                            ) : (
+                              <>
+                                <Clock className="w-2.5 h-2.5" />
+                                Da Giocare
+                              </>
+                            )}
+                          </button>
+                          <input
+                            type="date"
+                            value={match.date}
+                            onChange={(e) =>
+                              handleSingleMatchDateChange(match, e.target.value)
+                            }
+                            className="text-[11px] font-bold text-slate-500 dark:text-slate-400 bg-transparent focus:outline-none tabular-nums cursor-pointer"
+                            title="Data di questa singola partita"
+                          />
+                        </div>
                       ) : (
                         <span className="text-xs font-bold text-slate-400">
                           Da accoppiare
@@ -985,36 +1330,45 @@ export const MatchdayScheduleView: React.FC<MatchdayScheduleViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Inline Summary of Scorers if already entered */}
-                  {match && match.events.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-300 pl-9">
-                      {match.events
-                        .slice()
-                        .sort((a, b) => (a.minute || 0) - (b.minute || 0))
-                        .map((ev) => (
-                          <span
-                            key={ev.id}
-                            className="inline-flex items-center gap-1"
-                          >
-                            <strong className="text-emerald-600 dark:text-emerald-400 tabular-nums">
-                              {formatMinute(ev)}
-                            </strong>
-                            <span>
-                              {ev.type === 'YELLOW_CARD'
-                                ? '🟨'
-                                : ev.type === 'RED_CARD' ||
-                                  ev.type === 'SECOND_YELLOW_RED'
-                                ? '🟥'
-                                : '⚽'}
-                            </span>
-                            <span className="font-bold">{ev.playerName}</span>
-                            {formatEventShortBadgeIt(ev.type) && (
-                              <span className="text-[10px] text-slate-400">
-                                {formatEventShortBadgeIt(ev.type)}
+                  {/* Inline Summary of Stadium & Scorers if already entered */}
+                  {match && (match.events.length > 0 || match.stadium) && (
+                    <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-300 pl-8">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                        {match.events
+                          .slice()
+                          .sort((a, b) => (a.minute || 0) - (b.minute || 0))
+                          .map((ev) => (
+                            <span
+                              key={ev.id}
+                              className="inline-flex items-center gap-1"
+                            >
+                              <strong className="text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                {formatMinute(ev)}
+                              </strong>
+                              <span>
+                                {ev.type === 'YELLOW_CARD'
+                                  ? '🟨'
+                                  : ev.type === 'RED_CARD' ||
+                                    ev.type === 'SECOND_YELLOW_RED'
+                                  ? '🟥'
+                                  : '⚽'}
                               </span>
-                            )}
-                          </span>
-                        ))}
+                              <span className="font-bold">{ev.playerName}</span>
+                              {formatEventShortBadgeIt(ev.type) && (
+                                <span className="text-[10px] text-slate-400">
+                                  {formatEventShortBadgeIt(ev.type)}
+                                </span>
+                              )}
+                            </span>
+                          ))}
+                      </div>
+
+                      {match.stadium && (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 dark:text-slate-500">
+                          <MapPin className="w-3 h-3 text-emerald-600" />
+                          {match.stadium}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>

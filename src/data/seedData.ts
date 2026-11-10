@@ -488,6 +488,68 @@ export const DEFAULT_DATABASE: DatabaseSchema = {
   matches: [],
 };
 
+export const KNOWN_CLUB_STADIUMS: Record<string, string> = {
+  'team-inter': 'San Siro (Giuseppe Meazza), Milano',
+  'team-milan': 'San Siro (Giuseppe Meazza), Milano',
+  'team-juventus': 'Allianz Stadium, Torino',
+  'team-napoli': 'Stadio Diego Armando Maradona, Napoli',
+  'team-roma': 'Stadio Olimpico, Roma',
+  'team-lazio': 'Stadio Olimpico, Roma',
+  'team-atalanta': 'Gewiss Stadium, Bergamo',
+  'team-fiorentina': 'Stadio Artemio Franchi, Firenze',
+  'team-bologna': "Stadio Renato Dall'Ara, Bologna",
+  'team-torino': 'Stadio Olimpico Grande Torino',
+  'team-udinese': 'Bluenergy Stadium, Udine',
+  'team-genoa': 'Stadio Luigi Ferraris, Genova',
+  'team-verona': 'Stadio Marcantonio Bentegodi, Verona',
+  'team-cagliari': 'Unipol Domus, Cagliari',
+  'team-lecce': 'Stadio Via del Mare, Lecce',
+  'team-empoli': 'Stadio Carlo Castellani, Empoli',
+  'team-parma': 'Stadio Ennio Tardini, Parma',
+  'team-como': 'Stadio Giuseppe Sinigaglia, Como',
+  'team-monza': 'U-Power Stadium, Monza',
+  'team-venezia': 'Stadio Pier Luigi Penzo, Venezia',
+  'team-realmadrid': 'Santiago Bernabéu, Madrid',
+  'team-barcelona': 'Estadi Olímpic / Camp Nou, Barcellona',
+  'team-mancity': 'Etihad Stadium, Manchester',
+  'team-liverpool': 'Anfield, Liverpool',
+  'team-bayern': 'Allianz Arena, Monaco',
+  'team-psg': 'Parco dei Principi, Parigi',
+  'team-arsenal': 'Emirates Stadium, Londra',
+};
+
+/**
+ * Returns the remembered or known home stadium for a given home team.
+ * Priority:
+ * 1) Explicit `team.stadium` saved on the Team object
+ * 2) Most recent home match of this team that had a non-empty `stadium`
+ * 3) Built-in known stadiums catalog (`KNOWN_CLUB_STADIUMS`)
+ */
+export function getTeamHomeStadium(
+  homeTeamId: string,
+  allTeams: Team[],
+  allMatches: Match[]
+): string {
+  if (!homeTeamId) return '';
+  const team = allTeams.find((t) => t.id === homeTeamId);
+  if (team?.stadium && team.stadium.trim()) {
+    return team.stadium.trim();
+  }
+
+  // Search previous home matches for this team
+  for (const m of allMatches) {
+    if (m.homeTeamId === homeTeamId && m.stadium && m.stadium.trim()) {
+      return m.stadium.trim();
+    }
+  }
+
+  if (KNOWN_CLUB_STADIUMS[homeTeamId]) {
+    return KNOWN_CLUB_STADIUMS[homeTeamId];
+  }
+
+  return '';
+}
+
 /**
  * Returns ONLY the teams enrolled in the given competition, sorted alphabetically.
  */
@@ -499,15 +561,17 @@ export function getTeamsForCompetition(
   const comp = competitions.find((c) => c.id === competitionId);
   if (!comp) return [...allTeams].sort((a, b) => a.name.localeCompare(b.name));
 
-  const enrolledIds = new Set<string>(comp.teamIds || []);
-  const filtered = allTeams.filter(
-    (t) => enrolledIds.has(t.id) || t.defaultCompetitionId === competitionId
-  );
-
-  // If the competition currently has at least 1 enrolled team, return strictly those teams
-  if (filtered.length > 0) {
-    return filtered.sort((a, b) => a.name.localeCompare(b.name));
+  // When comp.teamIds is explicitly configured, strictly use those teams!
+  if (Array.isArray(comp.teamIds) && comp.teamIds.length > 0) {
+    const enrolledIds = new Set<string>(comp.teamIds);
+    return allTeams
+      .filter((t) => enrolledIds.has(t.id))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  return [];
+  const filtered = allTeams.filter(
+    (t) => t.defaultCompetitionId === competitionId
+  );
+
+  return filtered.sort((a, b) => a.name.localeCompare(b.name));
 }

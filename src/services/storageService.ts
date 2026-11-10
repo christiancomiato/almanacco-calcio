@@ -290,17 +290,16 @@ function normalizeDatabase(raw: any): DatabaseSchema {
 
   const rawCompetitions: Competition[] = Array.isArray(raw.competitions)
     ? raw.competitions.map((c: Competition) => {
-        if (c.id === 'comp-serie-a') {
-          const existingIds = Array.isArray(c.teamIds) && c.teamIds.length > 0 ? c.teamIds : SERIE_A_TEAM_IDS;
-          const mergedIds = Array.from(new Set([...existingIds, ...SERIE_A_TEAM_IDS]));
-          return {
-            ...c,
-            teamCount: c.teamCount || 20,
-            hasReturnLeg: c.hasReturnLeg !== undefined ? c.hasReturnLeg : true,
-            teamIds: mergedIds,
-          };
-        }
-        if (!Array.isArray(c.teamIds) || c.teamIds.length === 0) {
+        // Only migrate v1 competitions that did NOT have teamIds / teamCount yet
+        if (!Array.isArray(c.teamIds)) {
+          if (c.id === 'comp-serie-a') {
+            return {
+              ...c,
+              teamCount: c.teamCount || 20,
+              hasReturnLeg: c.hasReturnLeg !== undefined ? c.hasReturnLeg : true,
+              teamIds: SERIE_A_TEAM_IDS,
+            };
+          }
           const matchingTeams = rawTeams
             .filter((t) => t.defaultCompetitionId === c.id)
             .map((t) => t.id);
@@ -311,7 +310,10 @@ function normalizeDatabase(raw: any): DatabaseSchema {
             teamIds: matchingTeams,
           };
         }
-        return c;
+        return {
+          ...c,
+          teamCount: c.teamCount || c.teamIds.length || 20,
+        };
       })
     : DEFAULT_DATABASE.competitions;
 

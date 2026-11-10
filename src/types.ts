@@ -25,6 +25,7 @@ export interface Competition {
   teamIds?: string[]; // Explicitly enrolled team IDs for this competition
   hasReturnLeg?: boolean; // True = Girone d'Andata + Girone di Ritorno automatico
   season?: string; // Default season e.g. "2026/27"
+  matchdayDateRanges?: Record<string, { startDate: string; endDate: string }>; // Key: `${season}::${day}`
 }
 
 export interface Team {
@@ -32,6 +33,7 @@ export interface Team {
   name: string;
   shortCode: string; // e.g. INT, MIL, JUV
   cityOrCountry?: string;
+  stadium?: string; // Default home stadium of this team (auto-remembered and editable)
   primaryColor: string;
   secondaryColor: string;
   logoUrl?: string; // Cached data URL or remote URL
