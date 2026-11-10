@@ -10,6 +10,8 @@ export type EventType =
 
 export type TeamSide = 'home' | 'away';
 
+export type MatchStatus = 'SCHEDULED' | 'PLAYED';
+
 export interface Competition {
   id: string;
   name: string;
@@ -19,6 +21,10 @@ export interface Competition {
   logoUrl?: string; // Cached data URL or remote URL
   isFavorite?: boolean;
   type?: 'league' | 'cup' | 'international';
+  teamCount?: number; // e.g., 20 teams
+  teamIds?: string[]; // Explicitly enrolled team IDs for this competition
+  hasReturnLeg?: boolean; // True = Girone d'Andata + Girone di Ritorno automatico
+  season?: string; // Default season e.g. "2026/27"
 }
 
 export interface Team {
@@ -39,7 +45,7 @@ export interface MatchEvent {
   side: TeamSide;
   type: EventType;
   playerName: string;
-  minute: number;
+  minute: number; // 0 means not entered yet while typing
   stoppageMinute?: number;
   assistPlayerName?: string;
   note?: string;
@@ -53,6 +59,10 @@ export interface Match {
   competitionId: string;
   competitionName: string;
   stageOrMatchday: string; // e.g. "12ª Giornata", "Finale", "Ottavi"
+  matchdayNumber?: number; // 1..38 for league matchdays
+  slotIndex?: number; // 0..(N/2 - 1) position within the matchday
+  status?: MatchStatus; // 'SCHEDULED' (Da Giocare) | 'PLAYED' (Giocata)
+  pairedMatchId?: string; // Link between Andata match and auto-generated Ritorno match
   homeTeamId: string;
   homeTeamName: string;
   awayTeamId: string;

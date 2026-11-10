@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   CheckCircle2,
   FolderOpen,
@@ -6,12 +6,15 @@ import {
   HardDrive,
   Loader2,
   Plus,
+  Settings,
   Shield,
   Sparkles,
   Trash2,
   Trophy,
+  Users,
 } from 'lucide-react';
 import { Competition, StorageInfo, Team } from '../types';
+import { getTeamsForCompetition } from '../data/seedData';
 import { CompetitionBadge, TeamCrest } from './TeamCrest';
 import { OnlineLogoModal } from './OnlineLogoModal';
 import {
@@ -25,7 +28,7 @@ interface TeamsAndCompetitionsViewProps {
   teams: Team[];
   competitions: Competition[];
   storageInfo: StorageInfo | null;
-  onSaveTeam: (team: Team) => void;
+  onSaveTeam: (team: Team, enrollInCompetitionId?: string) => void;
   onDeleteTeam: (teamId: string) => void;
   onSaveCompetition: (comp: Competition) => void;
   onDeleteCompetition: (compId: string) => void;
@@ -33,6 +36,8 @@ interface TeamsAndCompetitionsViewProps {
     teamLogos: Record<string, string>,
     compLogos: Record<string, string>
   ) => void;
+  onOpenNewCompetitionWizard: () => void;
+  onOpenEditCompetitionWizard: (comp: Competition) => void;
   onClearAllMatches?: () => void;
 }
 
@@ -45,17 +50,19 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
   onSaveCompetition,
   onDeleteCompetition,
   onBatchUpdateLogos,
+  onOpenNewCompetitionWizard,
+  onOpenEditCompetitionWizard,
   onClearAllMatches,
 }) => {
+  const [filterCompId, setFilterCompId] = useState<string>(
+    competitions[0]?.id || 'ALL'
+  );
   const [newTeamName, setNewTeamName] = useState('');
   const [newTeamShort, setNewTeamShort] = useState('');
   const [newTeamPrimary, setNewTeamPrimary] = useState('#0284c7');
   const [newTeamSecondary, setNewTeamSecondary] = useState('#ffffff');
-  const [newTeamStyle, setNewTeamStyle] = useState<Team['crestStyle']>('stripes');
-
-  const [newCompName, setNewCompName] = useState('');
-  const [newCompCountry, setNewCompCountry] = useState('Italia');
-  const [newCompColor, setNewCompColor] = useState('#0284c7');
+  const [newTeamStyle, setNewTeamStyle] =
+    useState<Team['crestStyle']>('stripes');
 
   const [batchProgress, setBatchProgress] = useState<string | null>(null);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
@@ -66,34 +73,32 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
   } | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
 
+  const displayedTeams = useMemo(() => {
+    if (filterCompId === 'ALL') {
+      return [...teams].sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return getTeamsForCompetition(filterCompId, competitions, teams);
+  }, [filterCompId, competitions, teams]);
+
   const handleAddTeam = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTeamName.trim()) return;
+    const targetCompId =
+      filterCompId !== 'ALL' ? filterCompId : competitions[0]?.id;
     const created: Team = {
       id: `team-${Date.now()}`,
       name: newTeamName.trim(),
-      shortCode: (newTeamShort.trim() || newTeamName.trim().slice(0, 3)).toUpperCase(),
+      shortCode: (
+        newTeamShort.trim() || newTeamName.trim().slice(0, 3)
+      ).toUpperCase(),
       primaryColor: newTeamPrimary,
       secondaryColor: newTeamSecondary,
+      defaultCompetitionId: targetCompId,
       crestStyle: newTeamStyle,
     };
-    onSaveTeam(created);
+    onSaveTeam(created, targetCompId);
     setNewTeamName('');
     setNewTeamShort('');
-  };
-
-  const handleAddCompetition = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCompName.trim()) return;
-    const created: Competition = {
-      id: `comp-${Date.now()}`,
-      name: newCompName.trim(),
-      shortName: newCompName.trim().slice(0, 3).toUpperCase(),
-      country: newCompCountry.trim() || 'Italia',
-      accentColor: newCompColor,
-    };
-    onSaveCompetition(created);
-    setNewCompName('');
   };
 
   const handleBatchDownloadMissingLogos = async () => {
@@ -102,7 +107,9 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
     const total = missingTeams.length + missingComps.length;
 
     if (total === 0) {
-      setBatchProgress('Tutti i club e le competizioni hanno già uno stemma salvato!');
+      setBatchProgress(
+        'Tutti i club e le competizioni hanno già uno stemma salvato!'
+      );
       setTimeout(() => setBatchProgress(null), 4000);
       return;
     }
@@ -144,7 +151,8 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
       }
 
       onBatchUpdateLogos(foundTeamLogos, foundCompLogos);
-      const countFound = Object.keys(foundTeamLogos).length + Object.keys(foundCompLogos).length;
+      const countFound =
+        Object.keys(foundTeamLogos).length + Object.keys(foundCompLogos).length;
       setBatchProgress(
         `Completato! Scaricati e salvati ${countFound} stemmi ufficiali sul disco.`
       );
@@ -158,65 +166,138 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
 
   return (
     <div className="space-y-8 pb-12">
-      {/* 1. Internet Logo Auto-Downloader Banner */}
-      <div className="bg-gradient-to-r from-emerald-900 via-slate-900 to-slate-900 text-white rounded-2xl p-6 border border-emerald-500/30 shadow-lg flex flex-wrap items-center justify-between gap-4">
-        <div className="space-y-1 max-w-2xl">
-          <div className="inline-flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-emerald-400">
-            <Globe className="w-4 h-4" />
-            Stemmi Club & Loghi Campionati da Internet
-          </div>
-          <h3 className="text-xl font-black">
-            Personalizza ogni Squadra e Competizione con il suo Stemma Ufficiale
-          </h3>
-          <p className="text-xs text-slate-300 leading-relaxed">
-            Puoi cliccare su <strong>“Cerca Stemma”</strong> su qualsiasi squadra qui sotto per scegliere il logo da Internet (Wikipedia / TheSportsDB) o caricarlo dal computer, oppure scaricare automaticamente tutti gli stemmi mancanti con un solo clic. Una volta scaricati, restano salvati sul PC anche senza internet.
-          </p>
-        </div>
-
-        <div className="flex flex-col items-end gap-2">
-          <button
-            type="button"
-            disabled={isBatchRunning}
-            onClick={handleBatchDownloadMissingLogos}
-            className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black text-sm flex items-center gap-2 shadow-md transition cursor-pointer"
-          >
-            {isBatchRunning ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Sparkles className="w-4 h-4" />
-            )}
-            Scarica Automaticamente Tutti gli Stemmi Mancanti
-          </button>
-          {batchProgress && (
-            <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              {batchProgress}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* 2. SQUADRE SECTION */}
+      {/* 1. CAMPIONATI E COMPETIZIONI SECTION (Top & Prominent!) */}
       <div className="bg-white dark:bg-studio-card border border-slate-200/90 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
           <div>
-            <h3 className="text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-              <Shield className="w-5 h-5 text-emerald-600" />
-              Elenco Squadre ({teams.length})
+            <h3 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2.5">
+              <Trophy className="w-6 h-6 text-emerald-600" />
+              Campionati e Competizioni ({competitions.length})
             </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Clicca sullo stemma o sul pulsante <strong>Stemma Online</strong> per scaricare il logo ufficiale del club.
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Crea un nuovo campionato indicando il numero di squadre e i loro nomi, oppure modifica le squadre di un torneo esistente.
             </p>
           </div>
 
+          <button
+            type="button"
+            onClick={onOpenNewCompetitionWizard}
+            className="px-6 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black flex items-center gap-2 shadow-lg shadow-emerald-600/25 transition cursor-pointer"
+          >
+            <Plus className="w-5 h-5 stroke-[3]" />
+            Crea Nuovo Campionato (con Squadre)
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {competitions.map((c) => {
+            const compTeams = getTeamsForCompetition(c.id, competitions, teams);
+            const count = c.teamCount || compTeams.length || 20;
+            const andata = Math.max(1, count - 1);
+            const totalDays = c.hasReturnLeg !== false ? andata * 2 : andata;
+
+            return (
+              <div
+                key={c.id}
+                className="p-4 rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 flex flex-col justify-between gap-4 hover:border-emerald-500/60 transition"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <CompetitionBadge
+                      competition={c}
+                      size="lg"
+                      showName={false}
+                    />
+                    <div className="min-w-0">
+                      <div className="font-black text-base text-slate-900 dark:text-white truncate">
+                        {c.name}
+                      </div>
+                      <div className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                        {c.country} •{' '}
+                        <strong className="text-emerald-600 dark:text-emerald-400">
+                          {compTeams.length} squadre
+                        </strong>{' '}
+                        • {totalDays} giornate
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => onDeleteCompetition(c.id)}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 transition cursor-pointer"
+                    title="Elimina campionato"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-200/70 dark:border-slate-700/70">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLogoModalTarget({ kind: 'competition', item: c })
+                    }
+                    className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 hover:border-emerald-500 flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-emerald-600" />
+                    {c.logoUrl ? 'Cambia Logo' : 'Cerca Logo'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onOpenEditCompetitionWizard(c)}
+                    className="px-3.5 py-1.5 rounded-xl bg-emerald-600/10 hover:bg-emerald-600 hover:text-white text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                    Modifica Squadre ({compTeams.length})
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 2. SQUADRE SECTION (Filtered by Competition!) */}
+      <div className="bg-white dark:bg-studio-card border border-slate-200/90 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div>
+              <h3 className="text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                <Shield className="w-5 h-5 text-emerald-600" />
+                Squadre del Campionato ({displayedTeams.length})
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Filtra per campionato per vedere o aggiungere squadre a quella specifica competizione.
+              </p>
+            </div>
+
+            <select
+              value={filterCompId}
+              onChange={(e) => setFilterCompId(e.target.value)}
+              className="px-3.5 py-2 rounded-xl border-2 border-emerald-500/50 bg-emerald-50/40 dark:bg-slate-800 text-sm font-black text-slate-900 dark:text-white cursor-pointer"
+            >
+              {competitions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  🏆 Squadre di: {c.name}
+                </option>
+              ))}
+              <option value="ALL">📋 Tutte le Squadre in Archivio</option>
+            </select>
+          </div>
+
           {/* Quick Add Team Form */}
-          <form onSubmit={handleAddTeam} className="flex flex-wrap items-center gap-2">
+          <form
+            onSubmit={handleAddTeam}
+            className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/70 p-2 rounded-2xl border border-slate-200 dark:border-slate-700"
+          >
             <input
               type="text"
               value={newTeamName}
               onChange={(e) => setNewTeamName(e.target.value)}
-              placeholder="Nuova squadra (es. Sampdoria)..."
-              className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-900 dark:text-white"
+              placeholder="Nome nuova squadra..."
+              className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-900 dark:text-white"
             />
             <input
               type="text"
@@ -224,7 +305,7 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
               value={newTeamShort}
               onChange={(e) => setNewTeamShort(e.target.value)}
               placeholder="Sigla (SAM)"
-              className="w-24 px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold uppercase text-center text-slate-900 dark:text-white"
+              className="w-20 px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold uppercase text-center text-slate-900 dark:text-white"
             />
             <input
               type="color"
@@ -243,25 +324,25 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
             <select
               value={newTeamStyle}
               onChange={(e) => setNewTeamStyle(e.target.value as any)}
-              className="px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200"
+              className="px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-800 dark:text-slate-200"
             >
               <option value="stripes">Strisce</option>
               <option value="solid">Tinta Unita</option>
-              <option value="halves"> Bicolore</option>
+              <option value="halves">Bicolore</option>
               <option value="hoops">Fasce</option>
             </select>
             <button
               type="submit"
-              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shadow-xs"
             >
-              <Plus className="w-4 h-4" />
+              <Plus className="w-4 h-4 stroke-[3]" />
               Aggiungi Squadra
             </button>
           </form>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
-          {teams.map((t) => (
+          {displayedTeams.map((t) => (
             <div
               key={t.id}
               className="p-3.5 rounded-xl border border-slate-200/90 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 hover:border-emerald-500/60 flex items-center justify-between gap-3 transition"
@@ -270,7 +351,9 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
                 <TeamCrest
                   team={t}
                   size="md"
-                  onClick={() => setLogoModalTarget({ kind: 'team', item: t })}
+                  onClick={() =>
+                    setLogoModalTarget({ kind: 'team', item: t })
+                  }
                 />
                 <div className="min-w-0">
                   <div className="font-extrabold text-sm text-slate-900 dark:text-white truncate">
@@ -282,7 +365,9 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
                     </span>
                     <button
                       type="button"
-                      onClick={() => setLogoModalTarget({ kind: 'team', item: t })}
+                      onClick={() =>
+                        setLogoModalTarget({ kind: 'team', item: t })
+                      }
                       className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
                     >
                       <Globe className="w-3 h-3" />
@@ -296,7 +381,9 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
                 <input
                   type="color"
                   value={t.primaryColor}
-                  onChange={(e) => onSaveTeam({ ...t, primaryColor: e.target.value })}
+                  onChange={(e) =>
+                    onSaveTeam({ ...t, primaryColor: e.target.value })
+                  }
                   title="Modifica colore primario"
                   className="w-5 h-5 rounded cursor-pointer border-0"
                 />
@@ -314,86 +401,41 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
         </div>
       </div>
 
-      {/* 3. COMPETIZIONI SECTION */}
-      <div className="bg-white dark:bg-studio-card border border-slate-200/90 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
-          <div>
-            <h3 className="text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-              <Trophy className="w-5 h-5 text-emerald-600" />
-              Campionati e Coppe ({competitions.length})
-            </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Gestisci i tornei e scarica i loghi ufficiali delle competizioni.
-            </p>
+      {/* 3. Internet Logo Auto-Downloader Banner */}
+      <div className="bg-gradient-to-r from-emerald-900 via-slate-900 to-slate-900 text-white rounded-2xl p-6 border border-emerald-500/30 shadow-lg flex flex-wrap items-center justify-between gap-4">
+        <div className="space-y-1 max-w-2xl">
+          <div className="inline-flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-emerald-400">
+            <Globe className="w-4 h-4" />
+            Stemmi Club & Loghi Campionati da Internet
           </div>
-
-          <form onSubmit={handleAddCompetition} className="flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              value={newCompName}
-              onChange={(e) => setNewCompName(e.target.value)}
-              placeholder="Nome torneo (es. Supercoppa)..."
-              className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-900 dark:text-white"
-            />
-            <input
-              type="text"
-              value={newCompCountry}
-              onChange={(e) => setNewCompCountry(e.target.value)}
-              placeholder="Nazione/Area"
-              className="w-28 px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-900 dark:text-white"
-            />
-            <input
-              type="color"
-              value={newCompColor}
-              onChange={(e) => setNewCompColor(e.target.value)}
-              className="w-8 h-8 rounded-lg cursor-pointer border-0"
-            />
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              Aggiungi Torneo
-            </button>
-          </form>
+          <h3 className="text-lg font-black">
+            Scarica Automaticamente Tutti gli Stemmi Ufficiali Mancanti
+          </h3>
+          <p className="text-xs text-slate-300 leading-relaxed">
+            Con un solo clic il programma cerca e salva sul PC gli stemmi ufficiali di tutte le squadre e dei campionati inseriti.
+          </p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
-          {competitions.map((c) => (
-            <div
-              key={c.id}
-              className="p-3.5 rounded-xl border border-slate-200/90 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-center justify-between gap-3"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <CompetitionBadge competition={c} size="lg" showName={false} />
-                <div className="min-w-0">
-                  <div className="font-extrabold text-sm text-slate-900 dark:text-white truncate">
-                    {c.name}
-                  </div>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-xs text-slate-500 dark:text-slate-400">{c.country}</span>
-                    <button
-                      type="button"
-                      onClick={() => setLogoModalTarget({ kind: 'competition', item: c })}
-                      className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
-                    >
-                      <Globe className="w-3 h-3" />
-                      {c.logoUrl ? 'Cambia Logo' : 'Cerca Logo'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => onDeleteCompetition(c.id)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 transition cursor-pointer"
-                title="Rimuovi competizione"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          ))}
+        <div className="flex flex-col items-end gap-2">
+          <button
+            type="button"
+            disabled={isBatchRunning}
+            onClick={handleBatchDownloadMissingLogos}
+            className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black text-sm flex items-center gap-2 shadow-md transition cursor-pointer"
+          >
+            {isBatchRunning ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Sparkles className="w-4 h-4" />
+            )}
+            Scarica Stemmi Mancanti
+          </button>
+          {batchProgress && (
+            <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              {batchProgress}
+            </span>
+          )}
         </div>
       </div>
 
@@ -415,8 +457,8 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {onClearAllMatches && (
-              confirmClearAll ? (
+            {onClearAllMatches &&
+              (confirmClearAll ? (
                 <div className="flex items-center gap-1.5 p-1 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800">
                   <span className="text-[11px] font-bold text-rose-700 dark:text-rose-300 px-1">
                     Confermi eliminazione di tutte le partite?
@@ -448,8 +490,7 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
                   <Trash2 className="w-4 h-4" />
                   Svuota Tutte le Partite
                 </button>
-              )
-            )}
+              ))}
             <button
               type="button"
               onClick={openBackupFolder}
@@ -491,7 +532,6 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
         )}
       </div>
 
-      {/* Logo Picker Modal */}
       {logoModalTarget && (
         <OnlineLogoModal
           isOpen={true}

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Award,
+  Calendar,
   CheckCircle2,
   Download,
   FileSpreadsheet,
@@ -40,18 +41,26 @@ import {
   exportToExcelWorkbook,
   importBackupOrExcel,
 } from './services/excelService';
+import { MatchdayScheduleView } from './components/MatchdayScheduleView';
 import { MatchEntryView } from './components/MatchEntryView';
 import { MatchHistoryView } from './components/MatchHistoryView';
 import { StatsAndLeaderboardView } from './components/StatsAndLeaderboardView';
 import { TeamsAndCompetitionsView } from './components/TeamsAndCompetitionsView';
+import { CompetitionWizardModal } from './components/CompetitionWizardModal';
 
-type ActiveTab = 'entry' | 'history' | 'stats' | 'teams';
+type ActiveTab = 'schedule' | 'entry' | 'history' | 'stats' | 'teams';
 
 export const App: React.FC = () => {
   const [db, setDb] = useState<DatabaseSchema>(DEFAULT_DATABASE);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('entry');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('schedule');
+  const [selectedCompetitionId, setSelectedCompetitionId] = useState<string>(
+    DEFAULT_DATABASE.settings.defaultCompetitionId || 'comp-serie-a'
+  );
   const [editingMatch, setEditingMatch] = useState<Match | null>(null);
+  const [returnToScheduleAfterEdit, setReturnToScheduleAfterEdit] = useState(false);
+  const [isCompWizardOpen, setIsCompWizardOpen] = useState(false);
+  const [editingCompForWizard, setEditingCompForWizard] = useState<Competition | null>(null);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -79,7 +88,7 @@ export const App: React.FC = () => {
       const res = await checkForAppUpdates();
       setUpdateInfo({
         updateAvailable: res.updateAvailable,
-        currentVersion: res.currentVersion || '1.0.0',
+        currentVersion: res.currentVersion || '1.1.0',
         latestVersion: res.latestVersion,
         downloadUrl: res.downloadUrl,
         assetName: res.assetName,
@@ -119,6 +128,14 @@ export const App: React.FC = () => {
       const loaded = await loadDatabase();
       if (!mounted) return;
       setDb(loaded);
+      if (loaded.competitions.length > 0) {
+        const defaultComp = loaded.competitions.some(
+          (c) => c.id === loaded.settings.defaultCompetitionId
+        )
+          ? loaded.settings.defaultCompetitionId
+          : loaded.competitions[0].id;
+        setSelectedCompetitionId(defaultComp);
+      }
       setIsLoaded(true);
       const info = await getStorageInfo(loaded);
       if (mounted) setStorageInfo(info);
@@ -256,9 +273,25 @@ export const App: React.FC = () => {
     newCompetition?: Competition
   ) => {
     persistUpdate((prev) => {
-      const nextCompetitions = newCompetition
+      let nextCompetitions = newCompetition
         ? [...prev.competitions, newCompetition]
         : prev.competitions;
+
+      // Also enroll any newly created quick-teams into the match's competition
+      if (newTeams && newTeams.length > 0) {
+        const newIds = newTeams.map((t) => t.id);
+        nextCompetitions = nextCompetitions.map((c) => {
+          if (c.id !== match.competitionId) return c;
+          const existingIds = c.teamIds || [];
+          const merged = Array.from(new Set([...existingIds, ...newIds]));
+          return {
+            ...c,
+            teamIds: merged,
+            teamCount: Math.max(c.teamCount || 0, merged.length),
+          };
+        });
+      }
+
       const nextTeams =
         newTeams && newTeams.length > 0 ? [...prev.teams, ...newTeams] : prev.teams;
 
@@ -283,8 +316,62 @@ export const App: React.FC = () => {
 
     if (editingMatch) {
       setEditingMatch(null);
-      setActiveTab('history');
+      if (returnToScheduleAfterEdit) {
+        setReturnToScheduleAfterEdit(false);
+        setActiveTab('schedule');
+      } else {
+        setActiveTab('history');
+      }
       showToast('Partita aggiornata e salvata sul disco!');
+    }
+  };
+
+  const handleUpsertMatches = (matchesToSave: Match[]) => {
+    if (matchesToSave.length === 0) return;
+    persistUpdate((prev) => {
+      const incomingMap = new Map<string, Match>();
+      for (const m of matchesToSave) {
+        incomingMap.set(m.id, m);
+      }
+      const updatedExisting = prev.matches.map((m) => incomingMap.get(m.id) || m);
+      const existingIds = new Set(prev.matches.map((m) => m.id));
+      const brandNew = matchesToSave.filter((m) => !existingIds.has(m.id));
+      return {
+        ...prev,
+        matches: [...brandNew, ...updatedExisting],
+      };
+    });
+  };
+
+  const handleSaveCompetitionWithTeams = (
+    comp: Competition,
+    newlyCreatedTeams: Team[]
+  ) => {
+    persistUpdate((prev) => {
+      const nextTeams =
+        newlyCreatedTeams.length > 0
+          ? [...prev.teams, ...newlyCreatedTeams]
+          : prev.teams;
+      const exists = prev.competitions.some((c) => c.id === comp.id);
+      const nextCompetitions = exists
+        ? prev.competitions.map((c) => (c.id === comp.id ? comp : c))
+        : [...prev.competitions, comp];
+
+      return {
+        ...prev,
+        teams: nextTeams,
+        competitions: nextCompetitions,
+      };
+    }, true);
+
+    setSelectedCompetitionId(comp.id);
+    showToast(
+      `Campionato "${comp.name}" configurato con ${comp.teamIds?.length || comp.teamCount || 0} squadre!`
+    );
+
+    // Background fetch logos for newly created teams (first 8 to avoid rate limits)
+    for (const nt of newlyCreatedTeams.slice(0, 8)) {
+      autoFetchLogoForTeam(nt);
     }
   };
 
@@ -330,6 +417,7 @@ export const App: React.FC = () => {
       updatedAt: new Date().toISOString(),
     };
     setEditingMatch(copy);
+    setReturnToScheduleAfterEdit(false);
     setActiveTab('entry');
     showToast('Partita caricata nel modulo: modifica i dettagli e premi Salva!');
   };
@@ -365,15 +453,32 @@ export const App: React.FC = () => {
     showToast('Logo competizione aggiornato e salvato!');
   };
 
-  const handleSaveTeam = (team: Team) => {
+  const handleSaveTeam = (team: Team, addToCompetitionId?: string) => {
     const isNew = !db.teams.some((t) => t.id === team.id);
     persistUpdate((prev) => {
       const exists = prev.teams.some((t) => t.id === team.id);
+      const nextTeams = exists
+        ? prev.teams.map((t) => (t.id === team.id ? team : t))
+        : [...prev.teams, team];
+
+      const nextCompetitions = addToCompetitionId
+        ? prev.competitions.map((c) => {
+            if (c.id !== addToCompetitionId) return c;
+            const currentIds = c.teamIds || [];
+            if (currentIds.includes(team.id)) return c;
+            const merged = [...currentIds, team.id];
+            return {
+              ...c,
+              teamIds: merged,
+              teamCount: Math.max(c.teamCount || 0, merged.length),
+            };
+          })
+        : prev.competitions;
+
       return {
         ...prev,
-        teams: exists
-          ? prev.teams.map((t) => (t.id === team.id ? team : t))
-          : [...prev.teams, team],
+        teams: nextTeams,
+        competitions: nextCompetitions,
       };
     });
     showToast(`Squadra "${team.name}" salvata.`);
@@ -477,7 +582,7 @@ export const App: React.FC = () => {
     <div className="min-h-screen bg-slate-100 dark:bg-studio-dark text-slate-900 dark:text-slate-100 flex flex-col">
       {/* PERSISTENT HEADER & EXCEL/BACKUP SAFETY BAR */}
       <header className="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/90 dark:border-slate-800 shadow-xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
           {/* Brand Logo & Title */}
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-white flex items-center justify-center shadow-md shadow-emerald-600/20 font-black text-xl">
@@ -505,34 +610,47 @@ export const App: React.FC = () => {
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-[11px] font-bold text-slate-600 dark:text-slate-300 hover:border-emerald-500 transition cursor-pointer"
                 >
                   <RefreshCw className={`w-3 h-3 ${isCheckingUpdate ? 'animate-spin' : ''}`} />
-                  v{updateInfo?.currentVersion || '1.0.0'}
+                  v{updateInfo?.currentVersion || '1.1.0'}
                 </button>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Registro Partite, Marcatori, Statistiche & Archivio Storico
+                Calendario Giornate, Risultati, Marcatori, Classifiche & Archivio Storico
               </p>
             </div>
           </div>
 
           {/* Center Navigation Tabs */}
-          <nav className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/90 p-1 rounded-2xl border border-slate-200/80 dark:border-slate-700/70">
+          <nav className="flex flex-wrap items-center gap-1 bg-slate-100 dark:bg-slate-800/90 p-1 rounded-2xl border border-slate-200/80 dark:border-slate-700/70">
+            <button
+              type="button"
+              onClick={() => setActiveTab('schedule')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer ${
+                activeTab === 'schedule'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Calendar className="w-4 h-4" />
+              Calendario & Giornate
+            </button>
+
             <button
               type="button"
               onClick={() => setActiveTab('entry')}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition cursor-pointer ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer ${
                 activeTab === 'entry'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               <PlusCircle className="w-4 h-4" />
-              {editingMatch ? 'Modifica Partita' : 'Nuova Partita'}
+              {editingMatch ? 'Modifica Partita' : 'Partita Singola'}
             </button>
 
             <button
               type="button"
               onClick={() => setActiveTab('history')}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition cursor-pointer ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer ${
                 activeTab === 'history'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
@@ -554,7 +672,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={() => setActiveTab('stats')}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition cursor-pointer ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer ${
                 activeTab === 'stats'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
@@ -567,14 +685,14 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={() => setActiveTab('teams')}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition cursor-pointer ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer ${
                 activeTab === 'teams'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               <Shield className="w-4 h-4" />
-              Squadre & Stemmi
+              Campionati & Squadre
             </button>
           </nav>
 
@@ -744,21 +862,56 @@ export const App: React.FC = () => {
 
       {/* MAIN WORKSPACE CONTENT */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-6">
+        {activeTab === 'schedule' && (
+          <MatchdayScheduleView
+            competitions={db.competitions}
+            teams={db.teams}
+            matches={db.matches}
+            defaultSeason={db.settings.defaultSeason}
+            selectedCompetitionId={selectedCompetitionId}
+            onSelectCompetitionId={setSelectedCompetitionId}
+            onOpenNewCompetitionWizard={() => {
+              setEditingCompForWizard(null);
+              setIsCompWizardOpen(true);
+            }}
+            onOpenEditCompetitionWizard={(comp) => {
+              setEditingCompForWizard(comp);
+              setIsCompWizardOpen(true);
+            }}
+            onOpenMatchDetails={(m) => {
+              setEditingMatch(m);
+              setReturnToScheduleAfterEdit(true);
+              setActiveTab('entry');
+            }}
+            onUpsertMatches={handleUpsertMatches}
+            onDeleteMatch={handleDeleteMatch}
+          />
+        )}
+
         {activeTab === 'entry' && (
           <MatchEntryView
             competitions={db.competitions}
             teams={db.teams}
             matches={db.matches}
             defaultSeason={db.settings.defaultSeason}
-            defaultCompetitionId={db.settings.defaultCompetitionId}
+            defaultCompetitionId={selectedCompetitionId || db.settings.defaultCompetitionId}
             autoSyncScoreDefault={db.settings.autoSyncScoreFromGoals}
             editingMatch={editingMatch}
             onSaveMatch={handleSaveMatch}
             onUpdateTeamLogo={handleUpdateTeamLogo}
             onUpdateCompetitionLogo={handleUpdateCompetitionLogo}
+            onOpenNewCompetitionWizard={() => {
+              setEditingCompForWizard(null);
+              setIsCompWizardOpen(true);
+            }}
             onCancelEdit={() => {
               setEditingMatch(null);
-              setActiveTab('history');
+              if (returnToScheduleAfterEdit) {
+                setReturnToScheduleAfterEdit(false);
+                setActiveTab('schedule');
+              } else {
+                setActiveTab('history');
+              }
             }}
           />
         )}
@@ -770,6 +923,7 @@ export const App: React.FC = () => {
             competitions={db.competitions}
             onEditMatch={(m) => {
               setEditingMatch(m);
+              setReturnToScheduleAfterEdit(false);
               setActiveTab('entry');
             }}
             onDuplicateMatch={handleDuplicateMatch}
@@ -797,10 +951,31 @@ export const App: React.FC = () => {
             onSaveCompetition={handleSaveCompetition}
             onDeleteCompetition={handleDeleteCompetition}
             onBatchUpdateLogos={handleBatchUpdateLogos}
+            onOpenNewCompetitionWizard={() => {
+              setEditingCompForWizard(null);
+              setIsCompWizardOpen(true);
+            }}
+            onOpenEditCompetitionWizard={(comp) => {
+              setEditingCompForWizard(comp);
+              setIsCompWizardOpen(true);
+            }}
             onClearAllMatches={handleClearAllMatches}
           />
         )}
       </main>
+
+      {/* Global Wizard Modal for Creating/Editing a Championship with its Enrolled Teams */}
+      <CompetitionWizardModal
+        isOpen={isCompWizardOpen}
+        editingCompetition={editingCompForWizard}
+        allTeams={db.teams}
+        defaultSeason={db.settings.defaultSeason}
+        onClose={() => {
+          setIsCompWizardOpen(false);
+          setEditingCompForWizard(null);
+        }}
+        onSaveCompetitionWithTeams={handleSaveCompetitionWithTeams}
+      />
     </div>
   );
 };

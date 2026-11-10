@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { Competition, Match, Team } from '../types';
+import { getTeamsForCompetition } from '../data/seedData';
 import { CompetitionBadge, TeamCrest } from './TeamCrest';
 import { formatEventLabelIt, formatMinute } from '../services/excelService';
 import { formatItalianDate } from './MatchHistoryView';
@@ -97,6 +98,7 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
 
   const filteredMatches = useMemo(() => {
     return matches.filter((m) => {
+      if (m.status === 'SCHEDULED') return false;
       if (filterCompId !== 'ALL' && m.competitionId !== filterCompId) return false;
       if (filterSeason !== 'ALL' && m.season !== filterSeason) return false;
       return true;
@@ -273,6 +275,14 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
       return map.get(teamId)!;
     };
 
+    // If a specific competition is selected, pre-seed all enrolled teams of that competition
+    if (filterCompId !== 'ALL') {
+      const enrolled = getTeamsForCompetition(filterCompId, competitions, teams);
+      for (const t of enrolled) {
+        ensureTeam(t.id, t.name);
+      }
+    }
+
     // Sort chronologically ascending so form array ends with latest matches
     const chronological = [...filteredMatches].sort((a, b) => a.date.localeCompare(b.date));
 
@@ -313,17 +323,22 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
     }
 
     return Array.from(map.values()).sort(
-      (a, b) => b.points - a.points || b.gd - a.gd || b.gf - a.gf
+      (a, b) =>
+        b.points - a.points ||
+        b.gd - a.gd ||
+        b.gf - a.gf ||
+        a.teamName.localeCompare(b.teamName)
     );
-  }, [filteredMatches]);
+  }, [filteredMatches, filterCompId, competitions, teams]);
 
   // Compute Head-to-Head (Scontri Diretti)
   const h2hData = useMemo(() => {
     const h2hMatches = matches
       .filter(
         (m) =>
-          (m.homeTeamId === h2hTeamAId && m.awayTeamId === h2hTeamBId) ||
-          (m.homeTeamId === h2hTeamBId && m.awayTeamId === h2hTeamAId)
+          m.status !== 'SCHEDULED' &&
+          ((m.homeTeamId === h2hTeamAId && m.awayTeamId === h2hTeamBId) ||
+            (m.homeTeamId === h2hTeamBId && m.awayTeamId === h2hTeamAId))
       )
       .sort((a, b) => b.date.localeCompare(a.date));
 

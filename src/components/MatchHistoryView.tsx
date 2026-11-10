@@ -1,9 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import {
   Calendar,
+  Clock,
   Copy,
   Edit3,
-  Filter,
   LayoutGrid,
   List,
   MapPin,
@@ -16,6 +16,7 @@ import {
 import { Competition, Match, MatchEvent, Team } from '../types';
 import { CompetitionBadge, TeamCrest } from './TeamCrest';
 import { formatEventShortBadgeIt, formatMinute } from '../services/excelService';
+import { getTeamsForCompetition } from '../data/seedData';
 
 interface MatchHistoryViewProps {
   matches: Match[];
@@ -58,7 +59,15 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
   const [filterSeason, setFilterSeason] = useState('ALL');
   const [filterTeamId, setFilterTeamId] = useState('ALL');
   const [filterSpecial, setFilterSpecial] = useState<
-    'ALL' | 'PENALTIES' | 'RED_CARDS' | 'TOP_RATED' | 'HOME_WIN' | 'DRAW' | 'AWAY_WIN'
+    | 'ALL'
+    | 'PLAYED'
+    | 'SCHEDULED'
+    | 'PENALTIES'
+    | 'RED_CARDS'
+    | 'TOP_RATED'
+    | 'HOME_WIN'
+    | 'DRAW'
+    | 'AWAY_WIN'
   >('ALL');
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -76,6 +85,11 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
     return map;
   }, [competitions]);
 
+  const availableTeamsForFilter = useMemo(() => {
+    if (filterCompetitionId === 'ALL') return teams;
+    return getTeamsForCompetition(filterCompetitionId, competitions, teams);
+  }, [filterCompetitionId, competitions, teams]);
+
   const availableSeasons = useMemo(() => {
     const s = new Set<string>();
     for (const m of matches) {
@@ -88,6 +102,7 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
     const q = searchQuery.trim().toLowerCase();
     return [...matches]
       .filter((m) => {
+        const isScheduled = m.status === 'SCHEDULED';
         if (filterCompetitionId !== 'ALL' && m.competitionId !== filterCompetitionId) return false;
         if (filterSeason !== 'ALL' && m.season !== filterSeason) return false;
         if (
@@ -97,7 +112,11 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
         ) {
           return false;
         }
-        if (filterSpecial === 'PENALTIES') {
+        if (filterSpecial === 'PLAYED') {
+          if (isScheduled) return false;
+        } else if (filterSpecial === 'SCHEDULED') {
+          if (!isScheduled) return false;
+        } else if (filterSpecial === 'PENALTIES') {
           if (!m.events.some((e) => e.type === 'PENALTY_GOAL' || e.type === 'PENALTY_MISS'))
             return false;
         } else if (filterSpecial === 'RED_CARDS') {
@@ -106,11 +125,11 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
         } else if (filterSpecial === 'TOP_RATED') {
           if ((m.rating || 0) < 4) return false;
         } else if (filterSpecial === 'HOME_WIN') {
-          if (m.homeScore <= m.awayScore) return false;
+          if (isScheduled || m.homeScore <= m.awayScore) return false;
         } else if (filterSpecial === 'DRAW') {
-          if (m.homeScore !== m.awayScore) return false;
+          if (isScheduled || m.homeScore !== m.awayScore) return false;
         } else if (filterSpecial === 'AWAY_WIN') {
-          if (m.awayScore <= m.homeScore) return false;
+          if (isScheduled || m.awayScore <= m.homeScore) return false;
         }
 
         if (!q) return true;
@@ -135,7 +154,11 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
   }, [matches, searchQuery, filterCompetitionId, filterSeason, filterTeamId, filterSpecial]);
 
   const totalGoalsInFiltered = useMemo(
-    () => filteredMatches.reduce((acc, m) => acc + m.homeScore + m.awayScore, 0),
+    () =>
+      filteredMatches.reduce(
+        (acc, m) => (m.status === 'SCHEDULED' ? acc : acc + m.homeScore + m.awayScore),
+        0
+      ),
     [filteredMatches]
   );
 
@@ -182,8 +205,9 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
 
           {/* Summary Pill, Clear All Button & View Switcher */}
           <div className="flex flex-wrap items-center gap-3">
-            {matches.length > 0 && onClearAllMatches && (
-              confirmClearAll ? (
+            {matches.length > 0 &&
+              onClearAllMatches &&
+              (confirmClearAll ? (
                 <div className="flex items-center gap-1.5 p-1 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800">
                   <span className="text-[11px] font-bold text-rose-700 dark:text-rose-300 px-1">
                     Cancellare tutte le {matches.length} partite?
@@ -216,8 +240,7 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
                   <Trash2 className="w-3.5 h-3.5" />
                   Svuota Archivio
                 </button>
-              )
-            )}
+              ))}
 
             <div className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300">
               <span>{filteredMatches.length} partite</span>
@@ -260,7 +283,10 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
           <select
             value={filterCompetitionId}
-            onChange={(e) => setFilterCompetitionId(e.target.value)}
+            onChange={(e) => {
+              setFilterCompetitionId(e.target.value);
+              setFilterTeamId('ALL');
+            }}
             className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200"
           >
             <option value="ALL">🏆 Tutte le Competizioni</option>
@@ -289,8 +315,10 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
             onChange={(e) => setFilterTeamId(e.target.value)}
             className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200"
           >
-            <option value="ALL">🛡️ Tutte le Squadre</option>
-            {teams.map((t) => (
+            <option value="ALL">
+              🛡️ Tutte le Squadre ({availableTeamsForFilter.length})
+            </option>
+            {availableTeamsForFilter.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name}
               </option>
@@ -303,7 +331,9 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
               onChange={(e) => setFilterSpecial(e.target.value as any)}
               className="flex-1 px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200"
             >
-              <option value="ALL">⚡ Tutti gli Esiti & Eventi</option>
+              <option value="ALL">⚡ Tutte le Partite (Giocate + Da Giocare)</option>
+              <option value="PLAYED">✅ Solo Partite Giocate</option>
+              <option value="SCHEDULED">⏳ Solo Partite Da Giocare</option>
               <option value="PENALTIES">🎯 Partite con Rigori</option>
               <option value="RED_CARDS">🟥 Partite con Espulsioni</option>
               <option value="TOP_RATED">⭐ Partite Spettacolari (4-5★)</option>
@@ -338,7 +368,9 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
                 L’archivio partite è completamente vuoto e pronto!
               </h3>
               <p className="text-sm text-slate-500 dark:text-slate-400 max-w-lg mx-auto">
-                Puoi iniziare subito registrando la tua prima partita dalla scheda <strong>“Nuova Partita”</strong>, oppure importare un tuo file Excel/CSV con il pulsante <strong>Importa</strong> in alto a destra.
+                Puoi iniziare subito compilando un’intera giornata dalla scheda{' '}
+                <strong>“Calendario & Giornate”</strong> oppure registrando una singola partita da{' '}
+                <strong>“Partita Singola”</strong>.
               </p>
               {onLoadDemoMatches && (
                 <div className="pt-2">
@@ -358,7 +390,8 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
                 Nessuna partita corrisponde ai filtri selezionati
               </h3>
               <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-                Prova a premere <strong>Reset</strong> sui filtri per rivedere tutte le {matches.length} partite registrate.
+                Prova a premere <strong>Reset</strong> sui filtri per rivedere tutte le{' '}
+                {matches.length} partite registrate.
               </p>
               {hasActiveFilters && (
                 <button
@@ -376,6 +409,7 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
         /* BROADCAST MATCH CARDS VIEW */
         <div className="space-y-4">
           {filteredMatches.map((m) => {
+            const isScheduled = m.status === 'SCHEDULED';
             const comp = compMap.get(m.competitionId);
             const homeTeam = teamMap.get(m.homeTeamId);
             const awayTeam = teamMap.get(m.awayTeamId);
@@ -413,6 +447,12 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
                       {formatItalianDate(m.date)}
                       {m.time ? ` ore ${m.time}` : ''}
                     </span>
+                    {isScheduled && (
+                      <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 font-black text-[10px] inline-flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        DA GIOCARE
+                      </span>
+                    )}
                   </div>
 
                   {/* Rating & Quick Actions */}
@@ -432,7 +472,7 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
                       title="Modifica questa partita"
                     >
                       <Edit3 className="w-3.5 h-3.5" />
-                      Modifica
+                      {isScheduled ? 'Inserisci Risultato' : 'Modifica'}
                     </button>
 
                     <button
@@ -483,7 +523,7 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
                   <div className="md:col-span-4 flex items-center justify-between md:justify-end gap-3.5">
                     <span
                       className={`text-lg sm:text-xl font-extrabold truncate ${
-                        m.homeScore > m.awayScore
+                        !isScheduled && m.homeScore > m.awayScore
                           ? 'text-slate-950 dark:text-white'
                           : 'text-slate-700 dark:text-slate-300'
                       }`}
@@ -495,19 +535,32 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
 
                   {/* Score Box */}
                   <div className="md:col-span-3 flex flex-col items-center justify-center">
-                    <div className="inline-flex items-center gap-3 px-5 py-2 rounded-2xl bg-slate-900 dark:bg-slate-950 text-white font-black text-2xl sm:text-3xl tabular-nums shadow-xs border border-slate-700/80">
-                      <span className={m.homeScore > m.awayScore ? 'text-emerald-400' : ''}>
-                        {m.homeScore}
-                      </span>
-                      <span className="text-slate-500 text-xl">-</span>
-                      <span className={m.awayScore > m.homeScore ? 'text-emerald-400' : ''}>
-                        {m.awayScore}
-                      </span>
-                    </div>
-                    {m.homeHalfTimeScore !== undefined && m.awayHalfTimeScore !== undefined && (
-                      <span className="text-[11px] font-semibold text-slate-400 mt-1 tabular-nums">
-                        (1°T: {m.homeHalfTimeScore}-{m.awayHalfTimeScore})
-                      </span>
+                    {isScheduled ? (
+                      <button
+                        type="button"
+                        onClick={() => onEditMatch(m)}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-700 dark:text-amber-300 font-black text-xs uppercase tracking-wider cursor-pointer transition"
+                      >
+                        <Clock className="w-4 h-4" />
+                        Da Giocare
+                      </button>
+                    ) : (
+                      <>
+                        <div className="inline-flex items-center gap-3 px-5 py-2 rounded-2xl bg-slate-900 dark:bg-slate-950 text-white font-black text-2xl sm:text-3xl tabular-nums shadow-xs border border-slate-700/80">
+                          <span className={m.homeScore > m.awayScore ? 'text-emerald-400' : ''}>
+                            {m.homeScore}
+                          </span>
+                          <span className="text-slate-500 text-xl">-</span>
+                          <span className={m.awayScore > m.homeScore ? 'text-emerald-400' : ''}>
+                            {m.awayScore}
+                          </span>
+                        </div>
+                        {m.homeHalfTimeScore !== undefined && m.awayHalfTimeScore !== undefined && (
+                          <span className="text-[11px] font-semibold text-slate-400 mt-1 tabular-nums">
+                            (1°T: {m.homeHalfTimeScore}-{m.awayHalfTimeScore})
+                          </span>
+                        )}
+                      </>
                     )}
                   </div>
 
@@ -516,7 +569,7 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
                     <TeamCrest team={awayTeam} name={m.awayTeamName} size="md" />
                     <span
                       className={`text-lg sm:text-xl font-extrabold truncate ${
-                        m.awayScore > m.homeScore
+                        !isScheduled && m.awayScore > m.homeScore
                           ? 'text-slate-950 dark:text-white'
                           : 'text-slate-700 dark:text-slate-300'
                       }`}
@@ -593,67 +646,76 @@ export const MatchHistoryView: React.FC<MatchHistoryViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800">
-                {filteredMatches.map((m) => (
-                  <tr
-                    key={m.id}
-                    className="hover:bg-emerald-50/40 dark:hover:bg-slate-800/50 transition"
-                  >
-                    <td className="py-3 px-4 whitespace-nowrap font-semibold tabular-nums text-slate-600 dark:text-slate-300 text-xs">
-                      {m.date}
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap text-xs font-bold">
-                      <CompetitionBadge
-                        competition={compMap.get(m.competitionId)}
-                        name={m.competitionName}
-                        size="sm"
-                      />
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">
-                      {m.stageOrMatchday || '-'}
-                    </td>
-                    <td className="py-3 px-4 text-right font-bold text-slate-900 dark:text-white whitespace-nowrap">
-                      {m.homeTeamName}
-                    </td>
-                    <td className="py-3 px-3 text-center whitespace-nowrap">
-                      <span className="px-2.5 py-1 rounded-lg bg-slate-900 text-white font-black text-xs tabular-nums">
-                        {m.homeScore} - {m.awayScore}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 font-bold text-slate-900 dark:text-white whitespace-nowrap">
-                      {m.awayTeamName}
-                    </td>
-                    <td className="py-3 px-4 text-xs text-slate-600 dark:text-slate-300 max-w-md truncate">
-                      {m.events
-                        .map(
-                          (e) =>
-                            `${formatMinute(e)} ${e.playerName} ${formatEventShortBadgeIt(e.type)}`
-                        )
-                        .join(', ') ||
-                        m.notes ||
-                        '-'}
-                    </td>
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => onEditMatch(m)}
-                          className="p-1.5 rounded-lg hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 cursor-pointer"
-                          title="Modifica"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteMatch(m.id)}
-                          className="p-1.5 rounded-lg hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 cursor-pointer"
-                          title="Elimina"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {filteredMatches.map((m) => {
+                  const isScheduled = m.status === 'SCHEDULED';
+                  return (
+                    <tr
+                      key={m.id}
+                      className="hover:bg-emerald-50/40 dark:hover:bg-slate-800/50 transition"
+                    >
+                      <td className="py-3 px-4 whitespace-nowrap font-semibold tabular-nums text-slate-600 dark:text-slate-300 text-xs">
+                        {m.date}
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap text-xs font-bold">
+                        <CompetitionBadge
+                          competition={compMap.get(m.competitionId)}
+                          name={m.competitionName}
+                          size="sm"
+                        />
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">
+                        {m.stageOrMatchday || '-'}
+                      </td>
+                      <td className="py-3 px-4 text-right font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                        {m.homeTeamName}
+                      </td>
+                      <td className="py-3 px-3 text-center whitespace-nowrap">
+                        {isScheduled ? (
+                          <span className="px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-300 font-black text-[11px]">
+                            Da Giocare
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-1 rounded-lg bg-slate-900 text-white font-black text-xs tabular-nums">
+                            {m.homeScore} - {m.awayScore}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                        {m.awayTeamName}
+                      </td>
+                      <td className="py-3 px-4 text-xs text-slate-600 dark:text-slate-300 max-w-md truncate">
+                        {m.events
+                          .map(
+                            (e) =>
+                              `${formatMinute(e)} ${e.playerName} ${formatEventShortBadgeIt(e.type)}`
+                          )
+                          .join(', ') ||
+                          m.notes ||
+                          '-'}
+                      </td>
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => onEditMatch(m)}
+                            className="p-1.5 rounded-lg hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 cursor-pointer"
+                            title="Modifica"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteMatch(m.id)}
+                            className="p-1.5 rounded-lg hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 cursor-pointer"
+                            title="Elimina"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

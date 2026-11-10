@@ -1,5 +1,5 @@
-import { DatabaseSchema, OnlineLogoSearchResult, StorageInfo } from '../types';
-import { DEFAULT_DATABASE } from '../data/seedData';
+import { DatabaseSchema, OnlineLogoSearchResult, StorageInfo, Team, Competition } from '../types';
+import { DEFAULT_DATABASE, INITIAL_TEAMS, SERIE_A_TEAM_IDS } from '../data/seedData';
 
 declare global {
   interface Window {
@@ -279,17 +279,51 @@ function normalizeDatabase(raw: any): DatabaseSchema {
   if (!raw || typeof raw !== 'object') {
     return DEFAULT_DATABASE;
   }
+
+  const rawTeams: Team[] = Array.isArray(raw.teams) ? [...raw.teams] : [...DEFAULT_DATABASE.teams];
+  // Ensure Monza & Venezia exist if upgrading from v1.0
+  for (const seedTeam of INITIAL_TEAMS) {
+    if (!rawTeams.some((t) => t.id === seedTeam.id)) {
+      rawTeams.push(seedTeam);
+    }
+  }
+
+  const rawCompetitions: Competition[] = Array.isArray(raw.competitions)
+    ? raw.competitions.map((c: Competition) => {
+        if (c.id === 'comp-serie-a') {
+          const existingIds = Array.isArray(c.teamIds) && c.teamIds.length > 0 ? c.teamIds : SERIE_A_TEAM_IDS;
+          const mergedIds = Array.from(new Set([...existingIds, ...SERIE_A_TEAM_IDS]));
+          return {
+            ...c,
+            teamCount: c.teamCount || 20,
+            hasReturnLeg: c.hasReturnLeg !== undefined ? c.hasReturnLeg : true,
+            teamIds: mergedIds,
+          };
+        }
+        if (!Array.isArray(c.teamIds) || c.teamIds.length === 0) {
+          const matchingTeams = rawTeams
+            .filter((t) => t.defaultCompetitionId === c.id)
+            .map((t) => t.id);
+          return {
+            ...c,
+            teamCount: c.teamCount || matchingTeams.length || 20,
+            hasReturnLeg: c.hasReturnLeg !== undefined ? c.hasReturnLeg : c.type === 'league',
+            teamIds: matchingTeams,
+          };
+        }
+        return c;
+      })
+    : DEFAULT_DATABASE.competitions;
+
   return {
-    version: raw.version || 1,
+    version: 2,
     lastSavedAt: raw.lastSavedAt || new Date().toISOString(),
     settings: {
       ...DEFAULT_DATABASE.settings,
       ...(raw.settings || {}),
     },
-    competitions: Array.isArray(raw.competitions)
-      ? raw.competitions
-      : DEFAULT_DATABASE.competitions,
-    teams: Array.isArray(raw.teams) ? raw.teams : DEFAULT_DATABASE.teams,
+    competitions: rawCompetitions,
+    teams: rawTeams,
     matches: Array.isArray(raw.matches) ? raw.matches : DEFAULT_DATABASE.matches,
   };
 }
