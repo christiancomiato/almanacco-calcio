@@ -534,5 +534,5 @@ export const DEFAULT_DATABASE: DatabaseSchema = {
   },
   competitions: INITIAL_COMPETITIONS,
   teams: INITIAL_TEAMS,
-  matches: INITIAL_MATCHES,
+  matches: [],
 };

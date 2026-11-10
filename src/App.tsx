@@ -23,7 +23,7 @@ import {
   StorageInfo,
   Team,
 } from './types';
-import { DEFAULT_DATABASE } from './data/seedData';
+import { DEFAULT_DATABASE, INITIAL_MATCHES } from './data/seedData';
 import {
   checkForAppUpdates,
   fetchAndCacheLogoUrl,
@@ -297,6 +297,28 @@ export const App: React.FC = () => {
       true
     );
     showToast('Partita rimossa dall’archivio.');
+  };
+
+  const handleClearAllMatches = () => {
+    persistUpdate(
+      (prev) => ({
+        ...prev,
+        matches: [],
+      }),
+      true
+    );
+    showToast('Archivio partite svuotato con successo.');
+  };
+
+  const handleLoadDemoMatches = () => {
+    persistUpdate(
+      (prev) => ({
+        ...prev,
+        matches: INITIAL_MATCHES,
+      }),
+      true
+    );
+    showToast('Partite di esempio caricate.');
   };
 
   const handleDuplicateMatch = (match: Match) => {
@@ -752,6 +774,8 @@ export const App: React.FC = () => {
             }}
             onDuplicateMatch={handleDuplicateMatch}
             onDeleteMatch={handleDeleteMatch}
+            onClearAllMatches={handleClearAllMatches}
+            onLoadDemoMatches={handleLoadDemoMatches}
           />
         )}
 
@@ -773,6 +797,7 @@ export const App: React.FC = () => {
             onSaveCompetition={handleSaveCompetition}
             onDeleteCompetition={handleDeleteCompetition}
             onBatchUpdateLogos={handleBatchUpdateLogos}
+            onClearAllMatches={handleClearAllMatches}
           />
         )}
       </main>

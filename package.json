@@ -1,7 +1,7 @@
 {
   "name": "scoreapp-calcio",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Christian Comiato <christiancomiato@gmail.com>",
   "description": "Almanacco & Statistiche Calcio - Registro Partite, Marcatori e Classifiche",
   "main": "dist-electron/main.js",

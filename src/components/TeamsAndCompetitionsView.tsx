@@ -33,6 +33,7 @@ interface TeamsAndCompetitionsViewProps {
     teamLogos: Record<string, string>,
     compLogos: Record<string, string>
   ) => void;
+  onClearAllMatches?: () => void;
 }
 
 export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> = ({
@@ -44,6 +45,7 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
   onSaveCompetition,
   onDeleteCompetition,
   onBatchUpdateLogos,
+  onClearAllMatches,
 }) => {
   const [newTeamName, setNewTeamName] = useState('');
   const [newTeamShort, setNewTeamShort] = useState('');
@@ -62,6 +64,7 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
     kind: 'team' | 'competition';
     item: Team | Competition;
   } | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
 
   const handleAddTeam = (e: React.FormEvent) => {
     e.preventDefault();
@@ -412,6 +415,41 @@ export const TeamsAndCompetitionsView: React.FC<TeamsAndCompetitionsViewProps> =
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {onClearAllMatches && (
+              confirmClearAll ? (
+                <div className="flex items-center gap-1.5 p-1 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800">
+                  <span className="text-[11px] font-bold text-rose-700 dark:text-rose-300 px-1">
+                    Confermi eliminazione di tutte le partite?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClearAllMatches();
+                      setConfirmClearAll(false);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-black cursor-pointer shadow-xs"
+                  >
+                    Sì, svuota
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearAll(false)}
+                    className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[11px] font-bold cursor-pointer"
+                  >
+                    No
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmClearAll(true)}
+                  className="px-4 py-2 rounded-xl border border-rose-300 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 text-xs font-bold flex items-center gap-2 transition cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Svuota Tutte le Partite
+                </button>
+              )
+            )}
             <button
               type="button"
               onClick={openBackupFolder}
