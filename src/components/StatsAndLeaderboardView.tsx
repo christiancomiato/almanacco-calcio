@@ -19,6 +19,7 @@ interface StatsAndLeaderboardViewProps {
   matches: Match[];
   teams: Team[];
   competitions: Competition[];
+  onSaveCompetition?: (comp: Competition) => void;
 }
 
 interface PlayerAggregatedStat {
@@ -58,6 +59,8 @@ interface StandingsRow {
   ga: number;
   gd: number;
   points: number;
+  penaltyPoints: number;
+  penaltyReason?: string;
   form: ('V' | 'P' | 'S')[];
 }
 
@@ -65,12 +68,19 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
   matches,
   teams,
   competitions,
+  onSaveCompetition,
 }) => {
   const [subTab, setSubTab] = useState<'scorers' | 'standings' | 'h2h'>('scorers');
-  const [filterCompId, setFilterCompId] = useState('ALL');
+  const [filterCompId, setFilterCompId] = useState(competitions[0]?.id || 'ALL');
   const [filterSeason, setFilterSeason] = useState('ALL');
   const [scorerSearch, setScorerSearch] = useState('');
   const [selectedPlayerModal, setSelectedPlayerModal] = useState<PlayerAggregatedStat | null>(null);
+  const [penaltyModalTarget, setPenaltyModalTarget] = useState<{
+    teamId: string;
+    teamName: string;
+    currentPoints: number;
+    currentReason: string;
+  } | null>(null);
 
   // H2H Team selectors
   const [h2hTeamAId, setH2hTeamAId] = useState(teams[0]?.id || '');
@@ -252,15 +262,61 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
       );
   }, [filteredMatches, scorerSearch]);
 
+  // Helper to resolve the competition that owns a team's point penalty
+  const getTargetCompetitionForPenalty = (teamId: string): Competition | undefined => {
+    if (filterCompId !== 'ALL') {
+      return compMap.get(filterCompId);
+    }
+    const team = teamMap.get(teamId);
+    if (team?.defaultCompetitionId && compMap.has(team.defaultCompetitionId)) {
+      return compMap.get(team.defaultCompetitionId);
+    }
+    return competitions.find((c) => (c.teamIds || []).includes(teamId)) || competitions[0];
+  };
+
+  const getTeamPenalty = (teamId: string): { points: number; reason?: string } => {
+    const comp = getTargetCompetitionForPenalty(teamId);
+    if (!comp?.pointPenalties) return { points: 0 };
+    const seasonKey = `${filterSeason}::${teamId}`;
+    const allKey = `ALL::${teamId}`;
+    const entry = comp.pointPenalties[seasonKey] || comp.pointPenalties[allKey];
+    if (entry && entry.points > 0) return entry;
+    return { points: 0 };
+  };
+
+  const handleSaveTeamPenalty = (teamId: string, points: number, reason: string) => {
+    if (!onSaveCompetition) return;
+    const comp = getTargetCompetitionForPenalty(teamId);
+    if (!comp) return;
+    const key = `${filterSeason}::${teamId}`;
+    const allKey = `ALL::${teamId}`;
+    const nextPenalties = { ...(comp.pointPenalties || {}) };
+    const cleanPoints = Math.max(0, Math.round(points));
+    if (cleanPoints === 0) {
+      delete nextPenalties[key];
+      delete nextPenalties[allKey];
+    } else {
+      nextPenalties[key] = { points: cleanPoints, reason: reason.trim() || undefined };
+      nextPenalties[allKey] = { points: cleanPoints, reason: reason.trim() || undefined };
+    }
+    onSaveCompetition({
+      ...comp,
+      pointPenalties: nextPenalties,
+    });
+    setPenaltyModalTarget(null);
+  };
+
   // Compute League Standings Table
   const standings = useMemo(() => {
     const map = new Map<string, StandingsRow>();
 
     const ensureTeam = (teamId: string, teamName: string): StandingsRow => {
       if (!map.has(teamId)) {
+        const currentTeamObj = teamMap.get(teamId);
+        const pen = getTeamPenalty(teamId);
         map.set(teamId, {
           teamId,
-          teamName,
+          teamName: currentTeamObj?.name || teamName,
           played: 0,
           won: 0,
           drawn: 0,
@@ -269,6 +325,8 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
           ga: 0,
           gd: 0,
           points: 0,
+          penaltyPoints: pen.points,
+          penaltyReason: pen.reason,
           form: [],
         });
       }
@@ -322,6 +380,13 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
       }
     }
 
+    // Apply point penalties before sorting
+    for (const row of map.values()) {
+      if (row.penaltyPoints > 0) {
+        row.points -= row.penaltyPoints;
+      }
+    }
+
     return Array.from(map.values()).sort(
       (a, b) =>
         b.points - a.points ||
@@ -329,7 +394,7 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
         b.gf - a.gf ||
         a.teamName.localeCompare(b.teamName)
     );
-  }, [filteredMatches, filterCompId, competitions, teams]);
+  }, [filteredMatches, filterCompId, filterSeason, competitions, teams, teamMap, compMap]);
 
   // Compute Head-to-Head (Scontri Diretti)
   const h2hData = useMemo(() => {
@@ -614,14 +679,16 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
       {/* SUB-TAB 2: LEAGUE STANDINGS TABLE */}
       {subTab === 'standings' && (
         <div className="bg-white dark:bg-studio-card border border-slate-200/90 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs">
-          <div className="p-4 border-b border-slate-200 dark:border-slate-800">
-            <h3 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-              <BarChart3 className="w-5 h-5 text-emerald-500" />
-              Classifica Squadre (Calcolata dalle Partite Registrate)
-            </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              3 punti per vittoria, 1 punto per pareggio. Filtra per Competizione in alto per vedere la classifica di un singolo campionato.
-            </p>
+          <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                <BarChart3 className="w-5 h-5 text-emerald-500" />
+                Classifica Squadre & Gestione Punti di Penalità
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                3 punti per vittoria, 1 punto per pareggio. Clicca sulla colonna <strong>Penalità</strong> di qualsiasi squadra per assegnare o rimuovere punti di penalizzazione.
+              </p>
+            </div>
           </div>
 
           {standings.length === 0 ? (
@@ -637,6 +704,9 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
                     <th className="py-3 px-4">Squadra</th>
                     <th className="py-3 px-3 text-center bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
                       Punti
+                    </th>
+                    <th className="py-3 px-3 text-center text-rose-600 dark:text-rose-400">
+                      Penalità
                     </th>
                     <th className="py-3 px-3 text-center">PG</th>
                     <th className="py-3 px-3 text-center">V</th>
@@ -666,10 +736,39 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
                             <span className="font-extrabold text-slate-900 dark:text-white">
                               {row.teamName}
                             </span>
+                            {row.penaltyPoints > 0 && (
+                              <span
+                                className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 text-[10px] font-black"
+                                title={row.penaltyReason || 'Penalizzazione attiva'}
+                              >
+                                -{row.penaltyPoints} pen.
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="py-3 px-3 text-center bg-emerald-500/5 font-black text-base tabular-nums text-emerald-600 dark:text-emerald-400">
                           {row.points}
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPenaltyModalTarget({
+                                teamId: row.teamId,
+                                teamName: row.teamName,
+                                currentPoints: row.penaltyPoints,
+                                currentReason: row.penaltyReason || '',
+                              })
+                            }
+                            className={`px-2.5 py-1 rounded-lg text-xs font-extrabold tabular-nums transition cursor-pointer ${
+                              row.penaltyPoints > 0
+                                ? 'bg-rose-600 text-white shadow-xs hover:bg-rose-500'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-rose-500/15 hover:text-rose-600 dark:hover:text-rose-400'
+                            }`}
+                            title="Clicca per assegnare o modificare i punti di penalità di questa squadra"
+                          >
+                            {row.penaltyPoints > 0 ? `-${row.penaltyPoints} pt` : 'Assegna'}
+                          </button>
                         </td>
                         <td className="py-3 px-3 text-center font-bold tabular-nums text-slate-700 dark:text-slate-300">
                           {row.played}
@@ -715,6 +814,28 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* Active Point Penalties Footnote */}
+          {standings.some((r) => r.penaltyPoints > 0) && (
+            <div className="p-4 bg-rose-50/70 dark:bg-rose-950/30 border-t border-rose-200/80 dark:border-rose-900/50 text-xs text-rose-800 dark:text-rose-200 space-y-1">
+              <div className="font-extrabold uppercase tracking-wider text-[11px]">
+                ⚖️ Penalizzazioni Punti Applicate in Classifica:
+              </div>
+              <div className="flex flex-wrap gap-3">
+                {standings
+                  .filter((r) => r.penaltyPoints > 0)
+                  .map((r) => (
+                    <span
+                      key={r.teamId}
+                      className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 font-bold"
+                    >
+                      <strong>{r.teamName}</strong>: -{r.penaltyPoints} punti
+                      {r.penaltyReason ? ` (${r.penaltyReason})` : ''}
+                    </span>
+                  ))}
+              </div>
             </div>
           )}
         </div>
@@ -875,6 +996,128 @@ export const StatsAndLeaderboardView: React.FC<StatsAndLeaderboardViewProps> = (
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Point Penalty Assignment Modal */}
+      {penaltyModalTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-xs p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
+            <div className="px-6 py-4 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <TeamCrest
+                  team={teamMap.get(penaltyModalTarget.teamId)}
+                  name={penaltyModalTarget.teamName}
+                  size="md"
+                />
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                    Penalizzazione Punti — {penaltyModalTarget.teamName}
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    I punti di penalità verranno sottratti automaticamente in classifica
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPenaltyModalTarget(null)}
+                className="p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div>
+                <label className="block text-xs font-extrabold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
+                  Quanti punti di penalizzazione vuoi applicare?
+                </label>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {[0, 1, 2, 3, 4, 5, 6, 8, 10, 15].map((pt) => (
+                    <button
+                      key={pt}
+                      type="button"
+                      onClick={() =>
+                        setPenaltyModalTarget({
+                          ...penaltyModalTarget,
+                          currentPoints: pt,
+                        })
+                      }
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition cursor-pointer ${
+                        penaltyModalTarget.currentPoints === pt
+                          ? pt === 0
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'bg-rose-600 text-white shadow-xs'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {pt === 0 ? 'Nessuna (0)' : `-${pt} pt`}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-bold text-slate-500">Valore personalizzato:</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={99}
+                    value={penaltyModalTarget.currentPoints}
+                    onChange={(e) =>
+                      setPenaltyModalTarget({
+                        ...penaltyModalTarget,
+                        currentPoints: Math.max(0, parseInt(e.target.value, 10) || 0),
+                      })
+                    }
+                    className="w-24 px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-black text-center text-rose-600 dark:text-rose-400"
+                  />
+                  <span className="text-xs font-bold text-slate-500">punti in meno</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-extrabold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                  Motivazione / Nota (Opzionale)
+                </label>
+                <input
+                  type="text"
+                  value={penaltyModalTarget.currentReason}
+                  onChange={(e) =>
+                    setPenaltyModalTarget({
+                      ...penaltyModalTarget,
+                      currentReason: e.target.value,
+                    })
+                  }
+                  placeholder="Es. Sentenza Giudice Sportivo, Irregolarità..."
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-semibold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setPenaltyModalTarget(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 cursor-pointer"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSaveTeamPenalty(
+                      penaltyModalTarget.teamId,
+                      penaltyModalTarget.currentPoints,
+                      penaltyModalTarget.currentReason
+                    )
+                  }
+                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold shadow-sm cursor-pointer"
+                >
+                  Salva Penalizzazione
+                </button>
+              </div>
             </div>
           </div>
         </div>

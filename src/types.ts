@@ -26,6 +26,7 @@ export interface Competition {
   hasReturnLeg?: boolean; // True = Girone d'Andata + Girone di Ritorno automatico
   season?: string; // Default season e.g. "2026/27"
   matchdayDateRanges?: Record<string, { startDate: string; endDate: string }>; // Key: `${season}::${day}`
+  pointPenalties?: Record<string, { points: number; reason?: string }>; // Key: `${season}::${teamId}` -> penalty points to subtract
 }
 
 export interface Team {
@@ -89,6 +90,7 @@ export interface AppSettings {
   defaultCompetitionId: string;
   autoSyncScoreFromGoals: boolean;
   autoFetchLogosOnline: boolean;
+  lastSeenVersion?: string;
 }
 
 export interface DatabaseSchema {

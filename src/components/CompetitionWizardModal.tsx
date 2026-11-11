@@ -2,11 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ListChecks,
-  Plus,
-  RefreshCw,
-  Shield,
   Sparkles,
   Trophy,
+  Type,
   Users,
   X,
 } from 'lucide-react';
@@ -20,7 +18,8 @@ interface CompetitionWizardModalProps {
   onClose: () => void;
   onSaveCompetitionWithTeams: (
     competition: Competition,
-    newlyCreatedTeams: Team[]
+    newlyCreatedTeams: Team[],
+    updatedExistingTeams?: Team[]
   ) => void;
 }
 
@@ -37,6 +36,19 @@ const PALETTE_COLORS = [
   { primary: '#0f172a', secondary: '#f8fafc' },
 ];
 
+export function formatTeamDisplayName(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  // If user typed all lowercase (e.g. "inter" or "real madrid"), capitalize each word's first letter
+  if (trimmed === trimmed.toLowerCase()) {
+    return trimmed
+      .split(/\s+/)
+      .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(' ');
+  }
+  return trimmed;
+}
+
 export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
   isOpen,
   editingCompetition,
@@ -52,6 +64,9 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
   const [teamCount, setTeamCount] = useState(20);
   const [hasReturnLeg, setHasReturnLeg] = useState(true);
   const [teamNames, setTeamNames] = useState<string[]>(Array(20).fill(''));
+  const [slotTeamIds, setSlotTeamIds] = useState<(string | null)[]>(
+    Array(20).fill(null)
+  );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -65,12 +80,17 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
       setCountry(editingCompetition.country || 'Italia');
       setSeason(editingCompetition.season || defaultSeason || '2026/27');
       setAccentColor(editingCompetition.accentColor || '#0284c7');
-      const enrolledTeams = (editingCompetition.teamIds || [])
-        .map((id) => allTeams.find((t) => t.id === id)?.name || '')
-        .filter(Boolean);
+
+      const enrolledPairs = (editingCompetition.teamIds || [])
+        .map((id) => {
+          const found = allTeams.find((t) => t.id === id);
+          return found ? { id: found.id, name: found.name } : null;
+        })
+        .filter((item): item is { id: string; name: string } => Boolean(item));
+
       const count = Math.max(
         2,
-        editingCompetition.teamCount || enrolledTeams.length || 20
+        editingCompetition.teamCount || enrolledPairs.length || 20
       );
       const evenCount = count % 2 === 0 ? count : count + 1;
       setTeamCount(evenCount);
@@ -79,11 +99,13 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
           ? editingCompetition.hasReturnLeg
           : true
       );
-      const slots = Array.from(
-        { length: evenCount },
-        (_, idx) => enrolledTeams[idx] || ''
+
+      setTeamNames(
+        Array.from({ length: evenCount }, (_, idx) => enrolledPairs[idx]?.name || '')
       );
-      setTeamNames(slots);
+      setSlotTeamIds(
+        Array.from({ length: evenCount }, (_, idx) => enrolledPairs[idx]?.id || null)
+      );
     } else {
       setName('');
       setCountry('Italia');
@@ -92,6 +114,7 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
       setTeamCount(20);
       setHasReturnLeg(true);
       setTeamNames(Array(20).fill(''));
+      setSlotTeamIds(Array(20).fill(null));
     }
   }, [isOpen, editingCompetition, allTeams, defaultSeason]);
 
@@ -104,6 +127,9 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
     setTeamNames((prev) =>
       Array.from({ length: evenCount }, (_, i) => prev[i] || '')
     );
+    setSlotTeamIds((prev) =>
+      Array.from({ length: evenCount }, (_, i) => prev[i] || null)
+    );
   };
 
   const handleTeamSlotChange = (index: number, value: string) => {
@@ -114,12 +140,39 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
     });
   };
 
+  const handleTeamSlotBlur = (index: number) => {
+    setTeamNames((prev) => {
+      const current = prev[index] || '';
+      const formatted = formatTeamDisplayName(current);
+      if (formatted === current) return prev;
+      const next = [...prev];
+      next[index] = formatted;
+      return next;
+    });
+  };
+
+  const handleFormatAllTeamNames = () => {
+    setTeamNames((prev) =>
+      prev.map((raw) => {
+        const trimmed = raw.trim();
+        if (!trimmed) return '';
+        return trimmed
+          .split(/\s+/)
+          .map((w) =>
+            w.length > 0 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w
+          )
+          .join(' ');
+      })
+    );
+  };
+
   const handleSlotKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement>,
     index: number
   ) => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      handleTeamSlotBlur(index);
       if (index + 1 < teamCount) {
         inputRefs.current[index + 1]?.focus();
       }
@@ -136,22 +189,33 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
     setErrorMsg(null);
 
     if (!name.trim()) {
-      setErrorMsg('Inserisci il nome del campionato o della competizione (es. Serie A, Serie B, Premier League).');
+      setErrorMsg(
+        'Inserisci il nome del campionato o della competizione (es. Serie A, Serie B, Premier League).'
+      );
       return;
     }
 
-    const cleanedNames = teamNames.map((n) => n.trim()).filter(Boolean);
-    if (cleanedNames.length < 2) {
+    const activeSlots = teamNames
+      .map((rawName, idx) => ({
+        name: formatTeamDisplayName(rawName),
+        originalId: slotTeamIds[idx] || null,
+        slotIndex: idx,
+      }))
+      .filter((s) => s.name.length > 0);
+
+    if (activeSlots.length < 2) {
       setErrorMsg('Inserisci almeno 2 squadre partecipanti al campionato.');
       return;
     }
 
     // Check duplicate team names inside the same competition
     const seen = new Set<string>();
-    for (const tName of cleanedNames) {
-      const lower = tName.toLowerCase();
+    for (const s of activeSlots) {
+      const lower = s.name.toLowerCase();
       if (seen.has(lower)) {
-        setErrorMsg(`La squadra "${tName}" è stata inserita più di una volta nell'elenco.`);
+        setErrorMsg(
+          `La squadra "${s.name}" è stata inserita più di una volta nell'elenco.`
+        );
         return;
       }
       seen.add(lower);
@@ -162,24 +226,47 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
       : `comp-${Date.now()}`;
 
     const newlyCreatedTeams: Team[] = [];
+    const updatedExistingTeams: Team[] = [];
     const enrolledTeamIds: string[] = [];
 
-    cleanedNames.forEach((tName, idx) => {
-      // Check if a team with this name already exists in the database
-      const existing = allTeams.find(
+    activeSlots.forEach((slot, idx) => {
+      const tName = slot.name;
+      // 1. Check if this slot already belonged to an existing team ID
+      const teamBySlotId = slot.originalId
+        ? allTeams.find((t) => t.id === slot.originalId)
+        : undefined;
+
+      // 2. Or check if a team with this name (case-insensitive) exists in the database
+      const teamByName = allTeams.find(
         (t) => t.name.trim().toLowerCase() === tName.toLowerCase()
       );
-      if (existing) {
-        enrolledTeamIds.push(existing.id);
+
+      const targetExistingTeam = teamBySlotId || teamByName;
+
+      if (targetExistingTeam) {
+        enrolledTeamIds.push(targetExistingTeam.id);
+        // If the user changed the name or fixed lowercase/uppercase (e.g. "napoli" -> "Napoli"), update the existing Team!
+        if (targetExistingTeam.name !== tName) {
+          updatedExistingTeams.push({
+            ...targetExistingTeam,
+            name: tName,
+            shortCode:
+              tName
+                .replace(/[^a-zA-Z]/g, '')
+                .slice(0, 3)
+                .toUpperCase() || targetExistingTeam.shortCode,
+          });
+        }
       } else {
         const colors = PALETTE_COLORS[idx % PALETTE_COLORS.length];
         const newTeam: Team = {
           id: `team-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
           name: tName,
-          shortCode: tName
-            .replace(/[^a-zA-Z]/g, '')
-            .slice(0, 3)
-            .toUpperCase() || 'CLB',
+          shortCode:
+            tName
+              .replace(/[^a-zA-Z]/g, '')
+              .slice(0, 3)
+              .toUpperCase() || 'CLB',
           cityOrCountry: country,
           primaryColor: colors.primary,
           secondaryColor: colors.secondary,
@@ -195,7 +282,7 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
 
     const savedComp: Competition = {
       id: compId,
-      name: name.trim(),
+      name: formatTeamDisplayName(name),
       shortName: name
         .trim()
         .split(/\s+/)
@@ -213,9 +300,14 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
       season: season.trim() || defaultSeason,
       teamIds: enrolledTeamIds,
       matchdayDateRanges: editingCompetition?.matchdayDateRanges,
+      pointPenalties: editingCompetition?.pointPenalties,
     };
 
-    onSaveCompetitionWithTeams(savedComp, newlyCreatedTeams);
+    onSaveCompetitionWithTeams(
+      savedComp,
+      newlyCreatedTeams,
+      updatedExistingTeams
+    );
     onClose();
   };
 
@@ -235,7 +327,7 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
                   : 'Crea Nuovo Campionato / Competizione'}
               </h2>
               <p className="text-xs text-emerald-100">
-                Imposta il numero di squadre e i loro nomi: il programma calcolerà automaticamente tutte le giornate d&apos;andata e ritorno.
+                Imposta il numero di squadre e modifica liberamente i loro nomi (incluse maiuscole e minuscole).
               </p>
             </div>
           </div>
@@ -398,16 +490,30 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
                   3. Elenco delle {teamCount} Squadre Iscritte ({filledTeamsCount}/{teamCount} inserite)
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Scrivi i nomi delle squadre di questo campionato (premi <strong>Invio</strong> per passare alla casella successiva). Solo queste squadre compariranno quando compili le giornate di questo campionato!
+                  Puoi modificare liberamente qualsiasi nome anche se già inserito (es. correggere minuscole/maiuscole).
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setTeamNames(Array(teamCount).fill(''))}
-                className="text-xs font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
-              >
-                Svuota caselle
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleFormatAllTeamNames}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer"
+                  title="Converte automaticamente i nomi scritti in minuscolo o tutto maiuscolo con l'Iniziale Maiuscola (es. napoli -> Napoli)"
+                >
+                  <Type className="w-3.5 h-3.5" />
+                  Correggi Maiuscole/Minuscole (Aa)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTeamNames(Array(teamCount).fill(''));
+                    setSlotTeamIds(Array(teamCount).fill(null));
+                  }}
+                  className="text-xs font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                >
+                  Svuota caselle
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
@@ -427,6 +533,7 @@ export const CompetitionWizardModal: React.FC<CompetitionWizardModalProps> = ({
                     list="wizard-existing-teams"
                     value={val}
                     onChange={(e) => handleTeamSlotChange(idx, e.target.value)}
+                    onBlur={() => handleTeamSlotBlur(idx)}
                     onKeyDown={(e) => handleSlotKeyDown(e, idx)}
                     placeholder={`Squadra ${idx + 1}...`}
                     className="w-full bg-transparent text-sm font-bold text-slate-900 dark:text-white focus:outline-none"

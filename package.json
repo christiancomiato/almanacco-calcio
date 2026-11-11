@@ -1,9 +1,9 @@
 {
   "name": "scoreapp-calcio",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "author": "Christian Comiato <christiancomiato@gmail.com>",
-  "description": "Almanacco & Statistiche Calcio - Registro Partite, Marcatori e Classifiche",
+  "description": "Almanacco Sportivo - Registro Partite, Campionati, Marcatori e Classifiche",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -39,7 +39,7 @@
   },
   "build": {
     "appId": "com.scoreapp.almanaccocalcio",
-    "productName": "Almanacco Calcio",
+    "productName": "Almanacco Sportivo",
     "publish": [
       {
         "provider": "github",
@@ -57,12 +57,11 @@
       "package.json"
     ],
     "win": {
-      "icon": "build/icon.png",
+      "icon": "build/icon.ico",
       "target": [
         "portable",
         "nsis"
-      ],
-      "signAndEditExecutable": false
+      ]
     },
     "portable": {
       "artifactName": "AlmanaccoCalcio-Portable.exe"
@@ -72,7 +71,7 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Almanacco Calcio",
+      "shortcutName": "Almanacco Sportivo",
       "artifactName": "AlmanaccoCalcio-Setup.exe"
     }
   }

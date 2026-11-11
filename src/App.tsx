@@ -47,8 +47,10 @@ import { MatchHistoryView } from './components/MatchHistoryView';
 import { StatsAndLeaderboardView } from './components/StatsAndLeaderboardView';
 import { TeamsAndCompetitionsView } from './components/TeamsAndCompetitionsView';
 import { CompetitionWizardModal } from './components/CompetitionWizardModal';
+import { UpdateAndChangelogModal, UpdateModalInfo } from './components/UpdateAndChangelogModal';
 
 type ActiveTab = 'schedule' | 'entry' | 'history' | 'stats' | 'teams';
+const CURRENT_APP_VERSION = '1.2.0';
 
 export const App: React.FC = () => {
   const [db, setDb] = useState<DatabaseSchema>(DEFAULT_DATABASE);
@@ -65,15 +67,13 @@ export const App: React.FC = () => {
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState<{
-    updateAvailable: boolean;
-    currentVersion: string;
-    latestVersion?: string;
-    downloadUrl?: string | null;
-    assetName?: string;
-  } | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateModalInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
+  const [isChangelogModalOpen, setIsChangelogModalOpen] = useState(false);
+  const [changelogModalMode, setChangelogModalMode] = useState<'update-available' | 'whats-new'>(
+    'whats-new'
+  );
   const autoFetchStartedRef = useRef(false);
 
   const showToast = (msg: string) => {
@@ -87,17 +87,23 @@ export const App: React.FC = () => {
     if (!silent) setIsCheckingUpdate(true);
     try {
       const res = await checkForAppUpdates();
-      setUpdateInfo({
+      const nextInfo: UpdateModalInfo = {
         updateAvailable: res.updateAvailable,
-        currentVersion: res.currentVersion || '1.1.1',
+        currentVersion: res.currentVersion || CURRENT_APP_VERSION,
         latestVersion: res.latestVersion,
+        releaseNotes: (res as any).releaseNotes,
         downloadUrl: res.downloadUrl,
         assetName: res.assetName,
-      });
-      if (!silent) {
-        if (res.updateAvailable) {
+      };
+      setUpdateInfo(nextInfo);
+      if (res.updateAvailable) {
+        setChangelogModalMode('update-available');
+        setIsChangelogModalOpen(true);
+        if (!silent) {
           showToast(`Nuova versione v${res.latestVersion} disponibile!`);
-        } else if (res.checked) {
+        }
+      } else if (!silent) {
+        if (res.checked) {
           showToast(`Hai già l'ultima versione installata (v${res.currentVersion}).`);
         } else if (res.error) {
           showToast(res.error);
@@ -138,6 +144,13 @@ export const App: React.FC = () => {
         setSelectedCompetitionId(defaultComp);
       }
       setIsLoaded(true);
+
+      // Show "What's New / Novità dell'Aggiornamento" modal automatically when a new version is launched for the first time
+      if (loaded.settings.lastSeenVersion !== CURRENT_APP_VERSION) {
+        setChangelogModalMode('whats-new');
+        setIsChangelogModalOpen(true);
+      }
+
       const info = await getStorageInfo(loaded);
       if (mounted) setStorageInfo(info);
       // Silent startup check for updates on GitHub
@@ -358,22 +371,48 @@ export const App: React.FC = () => {
 
   const handleSaveCompetitionWithTeams = (
     comp: Competition,
-    newlyCreatedTeams: Team[]
+    newlyCreatedTeams: Team[],
+    updatedExistingTeams?: Team[]
   ) => {
     persistUpdate((prev) => {
+      const updatedMap = new Map<string, Team>();
+      if (updatedExistingTeams) {
+        for (const ut of updatedExistingTeams) {
+          updatedMap.set(ut.id, ut);
+        }
+      }
+
+      const mergedExistingTeams = prev.teams.map((t) => updatedMap.get(t.id) || t);
       const nextTeams =
         newlyCreatedTeams.length > 0
-          ? [...prev.teams, ...newlyCreatedTeams]
-          : prev.teams;
+          ? [...mergedExistingTeams, ...newlyCreatedTeams]
+          : mergedExistingTeams;
+
       const exists = prev.competitions.some((c) => c.id === comp.id);
       const nextCompetitions = exists
         ? prev.competitions.map((c) => (c.id === comp.id ? comp : c))
         : [...prev.competitions, comp];
 
+      // Propagate any renamed team names into existing matches as well
+      const nextMatches =
+        updatedMap.size > 0
+          ? prev.matches.map((m) => {
+              const homeRenamed = updatedMap.get(m.homeTeamId);
+              const awayRenamed = updatedMap.get(m.awayTeamId);
+              if (!homeRenamed && !awayRenamed) return m;
+              return {
+                ...m,
+                homeTeamName: homeRenamed ? homeRenamed.name : m.homeTeamName,
+                awayTeamName: awayRenamed ? awayRenamed.name : m.awayTeamName,
+              };
+            })
+          : prev.matches;
+
       return {
         ...prev,
         teams: nextTeams,
         competitions: nextCompetitions,
+        matches: nextMatches,
       };
     }, true);
 
@@ -488,10 +527,25 @@ export const App: React.FC = () => {
           })
         : prev.competitions;
 
+      // Also propagate any renamed team name into existing matches
+      const nextMatches = exists
+        ? prev.matches.map((m) => {
+            const isHome = m.homeTeamId === team.id;
+            const isAway = m.awayTeamId === team.id;
+            if (!isHome && !isAway) return m;
+            return {
+              ...m,
+              homeTeamName: isHome ? team.name : m.homeTeamName,
+              awayTeamName: isAway ? team.name : m.awayTeamName,
+            };
+          })
+        : prev.matches;
+
       return {
         ...prev,
         teams: nextTeams,
         competitions: nextCompetitions,
+        matches: nextMatches,
       };
     });
     showToast(`Squadra "${team.name}" salvata.`);
@@ -600,16 +654,16 @@ export const App: React.FC = () => {
           <div className="flex items-center gap-3">
             <img
               src="./app-icon.jpg"
-              alt="Almanacco Calcio"
+              alt="Almanacco Sportivo"
               className="w-11 h-11 rounded-2xl object-cover shadow-md shadow-emerald-600/20 border border-emerald-500/30"
               onError={(e) => {
                 (e.currentTarget as HTMLImageElement).style.display = 'none';
               }}
             />
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
-                  Almanacco Calcio
+                  Almanacco Sportivo
                 </h1>
                 <button
                   type="button"
@@ -628,7 +682,21 @@ export const App: React.FC = () => {
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-[11px] font-bold text-slate-600 dark:text-slate-300 hover:border-emerald-500 transition cursor-pointer"
                 >
                   <RefreshCw className={`w-3 h-3 ${isCheckingUpdate ? 'animate-spin' : ''}`} />
-                  v{updateInfo?.currentVersion || '1.1.1'}
+                  v{updateInfo?.currentVersion || CURRENT_APP_VERSION}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChangelogModalMode(
+                      updateInfo?.updateAvailable ? 'update-available' : 'whats-new'
+                    );
+                    setIsChangelogModalOpen(true);
+                  }}
+                  title="Visualizza tutte le novità e le modifiche introdotte negli aggiornamenti"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-[11px] font-extrabold text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 transition cursor-pointer"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  Novità
                 </button>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -847,25 +915,37 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-2 font-bold">
               <Sparkles className="w-4 h-4 shrink-0" />
               <span>
-                È disponibile una nuova versione di Almanacco Calcio (v{updateInfo.latestVersion})!
+                È disponibile una nuova versione di Almanacco Sportivo (v{updateInfo.latestVersion})!
                 Tutte le tue partite e i tuoi dati resteranno salvati.
               </span>
             </div>
-            {updateInfo.downloadUrl && (
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                disabled={isInstallingUpdate}
-                onClick={handleInstallUpdateNow}
-                className="px-4 py-1.5 rounded-xl bg-white text-emerald-800 hover:bg-emerald-50 font-black text-xs flex items-center gap-1.5 shadow-xs transition cursor-pointer disabled:opacity-60"
+                onClick={() => {
+                  setChangelogModalMode('update-available');
+                  setIsChangelogModalOpen(true);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white font-bold text-xs transition cursor-pointer"
               >
-                {isInstallingUpdate ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Download className="w-3.5 h-3.5" />
-                )}
-                {isInstallingUpdate ? 'Download in corso...' : 'Scarica e Aggiorna Ora'}
+                Vedi Modifiche
               </button>
-            )}
+              {updateInfo.downloadUrl && (
+                <button
+                  type="button"
+                  disabled={isInstallingUpdate}
+                  onClick={handleInstallUpdateNow}
+                  className="px-4 py-1.5 rounded-xl bg-white text-emerald-800 hover:bg-emerald-50 font-black text-xs flex items-center gap-1.5 shadow-xs transition cursor-pointer disabled:opacity-60"
+                >
+                  {isInstallingUpdate ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  {isInstallingUpdate ? 'Download in corso...' : 'Scarica e Aggiorna Ora'}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -965,6 +1045,7 @@ export const App: React.FC = () => {
             matches={db.matches}
             teams={db.teams}
             competitions={db.competitions}
+            onSaveCompetition={handleSaveCompetition}
           />
         )}
 
@@ -1002,6 +1083,29 @@ export const App: React.FC = () => {
           setEditingCompForWizard(null);
         }}
         onSaveCompetitionWithTeams={handleSaveCompetitionWithTeams}
+      />
+
+      {/* Update Notification & Post-Update Changelog ("Novità dell'Aggiornamento") Modal */}
+      <UpdateAndChangelogModal
+        isOpen={isChangelogModalOpen}
+        mode={changelogModalMode}
+        currentVersion={updateInfo?.currentVersion || CURRENT_APP_VERSION}
+        updateInfo={updateInfo}
+        isInstallingUpdate={isInstallingUpdate}
+        updateDownloadPercent={isInstallingUpdate ? 65 : 0}
+        onInstallUpdate={handleInstallUpdateNow}
+        onClose={() => {
+          setIsChangelogModalOpen(false);
+          if (db.settings.lastSeenVersion !== CURRENT_APP_VERSION) {
+            persistUpdate((prev) => ({
+              ...prev,
+              settings: {
+                ...prev.settings,
+                lastSeenVersion: CURRENT_APP_VERSION,
+              },
+            }));
+          }
+        }}
       />
     </div>
   );

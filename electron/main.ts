@@ -677,14 +677,20 @@ function registerIpcHandlers() {
 }
 
 function createWindow() {
-  const iconPath = path.join(__dirname, '../dist/app-icon.jpg');
+  const icoPath = path.join(__dirname, '../dist/app-icon.ico');
+  const jpgPath = path.join(__dirname, '../dist/app-icon.jpg');
+  const resolvedIconPath = fs.existsSync(icoPath)
+    ? icoPath
+    : fs.existsSync(jpgPath)
+    ? jpgPath
+    : undefined;
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1080,
     minHeight: 720,
-    title: 'Almanacco Calcio — Registro Partite & Statistiche',
-    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    title: 'Almanacco Sportivo — Registro Partite, Campionati & Statistiche',
+    icon: resolvedIconPath,
     backgroundColor: '#0B111E',
     autoHideMenuBar: true,
     webPreferences: {
